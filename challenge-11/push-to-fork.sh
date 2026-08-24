@@ -1,29 +1,38 @@
 #!/usr/bin/env bash
-# Push MatchPlane challenge #11 branch to YOUR GitHub fork and open compare URL.
-# Requires: gh auth login (your account, NOT cursor[bot])
+# Push MatchPlane challenge #11 to pashippercode/matchplane fork, then open upstream PR.
+# Requires: gh auth login as pashippercode (must match FORK_USER).
 set -euo pipefail
 
 UPSTREAM="LIghtJUNction/matchplane"
+FORK_USER="${FORK_USER:-pashippercode}"
 BRANCH="cursor/challenge-11-participation-897f"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 if ! gh auth status >/dev/null 2>&1; then
-  echo "Run: gh auth login" >&2
+  echo "Run: gh auth login  (account: ${FORK_USER})" >&2
   exit 1
 fi
 
-USER="$(gh api user -q .login)"
-echo "GitHub user: ${USER}"
+LOGIN="$(gh api user -q .login)"
+if [[ "${LOGIN}" != "${FORK_USER}" ]]; then
+  echo "Logged in as ${LOGIN}, but FORK_USER is ${FORK_USER}." >&2
+  echo "Run: gh auth login  # switch to ${FORK_USER}" >&2
+  exit 1
+fi
 
-if ! gh repo view "${USER}/matchplane" >/dev/null 2>&1; then
-  echo "Forking ${UPSTREAM} → ${USER}/matchplane ..."
-  gh repo fork "${UPSTREAM}" --clone=false
+echo "Fork owner: ${FORK_USER}"
+
+if ! gh repo view "${FORK_USER}/matchplane" >/dev/null 2>&1; then
+  echo "Fork not found: ${FORK_USER}/matchplane" >&2
+  echo "Create it: https://github.com/${UPSTREAM} → Fork → account ${FORK_USER}" >&2
+  echo "Or: gh repo fork ${UPSTREAM} --clone=false" >&2
+  exit 1
 fi
 
 WORKDIR="$(mktemp -d)"
 trap 'rm -rf "${WORKDIR}"' EXIT
 
-git clone "https://github.com/${USER}/matchplane.git" "${WORKDIR}/matchplane"
+git clone "https://github.com/${FORK_USER}/matchplane.git" "${WORKDIR}/matchplane"
 cd "${WORKDIR}/matchplane"
 
 if git show-ref --verify --quiet "refs/heads/${BRANCH}"; then
@@ -45,15 +54,21 @@ git push -u origin "${BRANCH}"
 
 PR_TITLE='挑战11：首页改成「帮我找」、卡片抄了瓜子的作业、后台能配微信和短信登录了'
 PR_BODY_FILE="${SCRIPT_DIR}/pr-body.md"
+COMPARE_URL="https://github.com/${UPSTREAM}/compare/main...${FORK_USER}:matchplane:${BRANCH}"
+
 if [[ -f "${PR_BODY_FILE}" ]]; then
-  gh pr create \
+  if gh pr create \
     --repo "${UPSTREAM}" \
     --base main \
-    --head "${USER}:matchplane:${BRANCH}" \
+    --head "${FORK_USER}:matchplane:${BRANCH}" \
     --title "${PR_TITLE}" \
-    --body-file "${PR_BODY_FILE}" || true
+    --body-file "${PR_BODY_FILE}"; then
+    echo "PR created on ${UPSTREAM}"
+  else
+    echo "gh pr create failed; open compare URL manually:" >&2
+    echo "${COMPARE_URL}" >&2
+  fi
+else
+  echo "Open PR compare:"
+  echo "${COMPARE_URL}"
 fi
-
-echo ""
-echo "Branch pushed. Open PR compare:"
-echo "https://github.com/${UPSTREAM}/compare/main...${USER}:matchplane:${BRANCH}"
