@@ -1,0 +1,1052 @@
+From acf6469f7452fcbff58c44b84dd38aa9563721fe Mon Sep 17 00:00:00 2001
+From: Cursor Agent <cursoragent@cursor.com>
+Date: Mon, 24 Aug 2026 13:26:25 +0000
+Subject: [PATCH 20/23] feat(web): console-managed WeChat QR login config for
+ challenge #11
+
+Add a mall-console WeChat OAuth panel mirroring the national-identity
+pattern: secrets stored under /etc/matchplane/secrets, a rootSuperAdmin
+GET/PATCH route, and wiring into configuredOAuthProviders(). Pre-fills
+the official Open Platform qrconnect/sns endpoints and adapts generic
+OAuth to WeChat's native protocol (appid/secret GET token exchange,
+errcode bodies, openid userinfo parameter, no PKCE) while keeping the
+standard flow for proxy or mock gateways.
+---
+ .../api/platform/wechat-oauth/config/route.ts |  60 +++++
+ web/src/api.ts                                |  59 +++++
+ web/src/components/PlatformDashboard.tsx      |   5 +
+ web/src/components/WeChatLoginConfigPanel.tsx | 102 ++++++++
+ web/src/components/index.ts                   |   1 +
+ web/src/lib/auth.ts                           |  49 +++-
+ web/src/lib/wechat-oauth-config.test.ts       | 240 +++++++++++++++++
+ web/src/lib/wechat-oauth-config.ts            | 246 ++++++++++++++++++
+ web/src/wechat-oauth-route.test.ts            | 130 +++++++++
+ 9 files changed, 887 insertions(+), 5 deletions(-)
+ create mode 100644 web/app/api/platform/wechat-oauth/config/route.ts
+ create mode 100644 web/src/components/WeChatLoginConfigPanel.tsx
+ create mode 100644 web/src/lib/wechat-oauth-config.test.ts
+ create mode 100644 web/src/lib/wechat-oauth-config.ts
+ create mode 100644 web/src/wechat-oauth-route.test.ts
+
+diff --git a/web/app/api/platform/wechat-oauth/config/route.ts b/web/app/api/platform/wechat-oauth/config/route.ts
+new file mode 100644
+index 0000000..e804a23
+--- /dev/null
++++ b/web/app/api/platform/wechat-oauth/config/route.ts
+@@ -0,0 +1,60 @@
++import { NextResponse } from "next/server";
++
++import { auth } from "../../../../../src/lib/auth";
++import { readJsonBody, RequestBodyTooLargeError } from "../../../../../src/lib/body-limit";
++import { hasTrustedBrowserOrigin } from "../../../../../src/lib/request-origin";
++import {
++  getManagedWeChatOAuthConfig,
++  saveManagedWeChatOAuthConfig,
++} from "../../../../../src/lib/wechat-oauth-config";
++
++export const runtime = "nodejs";
++export const dynamic = "force-dynamic";
++
++export async function GET(request: Request): Promise<Response> {
++  const guard = await requireMallOwner(request, false);
++  if (guard instanceof Response) return guard;
++  return NextResponse.json({ config: getManagedWeChatOAuthConfig() }, { headers: { "cache-control": "no-store" } });
++}
++
++export async function PATCH(request: Request): Promise<Response> {
++  const guard = await requireMallOwner(request, true);
++  if (guard instanceof Response) return guard;
++  let body: Record<string, unknown>;
++  try {
++    const value = await readJsonBody<unknown>(request, 32 * 1024);
++    if (!value || typeof value !== "object" || Array.isArray(value)) return error("微信扫码登录配置必须是对象", 400);
++    body = value as Record<string, unknown>;
++  } catch (cause) {
++    return error(cause instanceof RequestBodyTooLargeError ? "配置请求过大" : "配置必须是有效 JSON", cause instanceof RequestBodyTooLargeError ? 413 : 400);
++  }
++  try {
++    const config = saveManagedWeChatOAuthConfig({
++      enabled: body.enabled === true,
++      appId: text(body.appId),
++      appSecret: optionalText(body.appSecret),
++      authorizationUrl: optionalText(body.authorizationUrl),
++      tokenUrl: optionalText(body.tokenUrl),
++      userInfoUrl: optionalText(body.userInfoUrl),
++      scopes: Array.isArray(body.scopes) ? body.scopes.filter((scope): scope is string => typeof scope === "string") : undefined,
++    });
++    return NextResponse.json({ config, restartRequired: true }, { headers: { "cache-control": "no-store" } });
++  } catch (cause) {
++    return error(cause instanceof Error ? cause.message : "微信扫码登录配置保存失败", 400);
++  }
++}
++
++async function requireMallOwner(request: Request, write: boolean): Promise<true | Response> {
++  if (!hasTrustedBrowserOrigin(request)) return error("请求来源未被商城信任", 403);
++  const session = await auth.api.getSession({ headers: request.headers });
++  if (!session) return error("需要登录", 401);
++  const role = (session.user as { role?: string | null }).role;
++  if (write ? role !== "rootSuperAdmin" : role !== "rootSuperAdmin" && role !== "rootAdmin") {
++    return error(write ? "只有商城负责人可以保存微信扫码登录配置" : "只有商城后台人员可以查看微信扫码登录配置", 403);
++  }
++  return true;
++}
++
++function text(value: unknown): string { return typeof value === "string" ? value : ""; }
++function optionalText(value: unknown): string | undefined { return typeof value === "string" && value.length ? value : undefined; }
++function error(message: string, status: number): Response { return NextResponse.json({ error: message }, { status, headers: { "cache-control": "no-store" } }); }
+diff --git a/web/src/api.ts b/web/src/api.ts
+index c390cb5..ef64f7c 100644
+--- a/web/src/api.ts
++++ b/web/src/api.ts
+@@ -2102,6 +2102,65 @@ export async function testSmsGatewayConfig(phoneNumber: string): Promise<void> {
+     );
+ }
+ 
++export interface WeChatOAuthConfig {
++  enabled: boolean;
++  appId: string;
++  scopes: string[];
++  authorizationUrl: string;
++  tokenUrl: string;
++  userInfoUrl: string;
++  credentialConfigured: boolean;
++}
++
++export async function getWeChatOAuthConfig(): Promise<WeChatOAuthConfig | null> {
++  const response = await fetch("/api/platform/wechat-oauth/config", {
++    credentials: "include",
++    headers: { accept: "application/json" },
++    cache: "no-store",
++  });
++  const body = (await response.json().catch(() => null)) as {
++    config?: WeChatOAuthConfig | null;
++    error?: string;
++  } | null;
++  if (!response.ok || !body)
++    throw new MarketplaceApiError(
++      response.status,
++      body?.error || "微信扫码登录配置读取失败",
++    );
++  return body.config ?? null;
++}
++
++export async function saveWeChatOAuthConfig(input: {
++  enabled: boolean;
++  appId: string;
++  appSecret?: string;
++  authorizationUrl?: string;
++  tokenUrl?: string;
++  userInfoUrl?: string;
++  scopes: string[];
++}): Promise<{ config: WeChatOAuthConfig; restartRequired: boolean }> {
++  const response = await fetch("/api/platform/wechat-oauth/config", {
++    method: "PATCH",
++    credentials: "include",
++    headers: { accept: "application/json", "content-type": "application/json" },
++    body: JSON.stringify(input),
++  });
++  const body = (await response.json().catch(() => null)) as {
++    config?: WeChatOAuthConfig;
++    restartRequired?: boolean;
++    error?: string;
++  } | null;
++  if (!response.ok || !body?.config)
++    throw new MarketplaceApiError(
++      response.status,
++      body?.error || "微信扫码登录配置保存失败",
++    );
++  return {
++    config: body.config,
++    restartRequired: body.restartRequired === true,
++  };
++}
++
+ export interface ContactResponse {
+   counterpart: {
+     party_id: string;
+diff --git a/web/src/components/PlatformDashboard.tsx b/web/src/components/PlatformDashboard.tsx
+index b06ce04..7b4224a 100644
+--- a/web/src/components/PlatformDashboard.tsx
++++ b/web/src/components/PlatformDashboard.tsx
+@@ -57,6 +57,7 @@ import { PlatformSiteSettingsPanel } from "./PlatformSiteSettingsPanel";
+ import { RootEmailConfigPanel } from "./RootEmailConfigPanel";
+ import { PlatformAiConfigPanel } from "./PlatformAiConfigPanel";
+ import { NationalIdentityConfigPanel } from "./NationalIdentityConfigPanel";
++import { WeChatLoginConfigPanel } from "./WeChatLoginConfigPanel";
+ import { PhoneLoginConfigPanel } from "./PhoneLoginConfigPanel";
+ import { MallCatalogModeration } from "./MallCatalogModeration";
+ import { MallBrandPanel } from "./MallBrandPanel";
+@@ -901,6 +902,10 @@ export function PlatformDashboard({
+                 rootRole={rootRole}
+                 onNotice={onNotice}
+               />
++              <WeChatLoginConfigPanel
++                rootRole={rootRole}
++                onNotice={onNotice}
++              />
+               <PhoneLoginConfigPanel rootRole={rootRole} onNotice={onNotice} />
+               <PlatformSiteSettingsPanel
+                 organizationId={setup?.root.organization?.id}
+diff --git a/web/src/components/WeChatLoginConfigPanel.tsx b/web/src/components/WeChatLoginConfigPanel.tsx
+new file mode 100644
+index 0000000..ce45a01
+--- /dev/null
++++ b/web/src/components/WeChatLoginConfigPanel.tsx
+@@ -0,0 +1,102 @@
++"use client";
++
++import { useEffect, useState } from "react";
++import { Save, ShieldCheck } from "lucide-react";
++import { Input } from "@appica/ui-react/input";
++
++import {
++  getWeChatOAuthConfig,
++  saveWeChatOAuthConfig,
++  type WeChatOAuthConfig,
++} from "../api";
++import { SectionHeading } from "./Primitives";
++
++// Official WeChat Open Platform "website application" QR-code login endpoints.
++// The server-side defaults live in src/lib/wechat-oauth-config.ts; these mirror
++// them so the form is pre-filled before any configuration has been saved.
++const DEFAULT_AUTHORIZATION_URL = "https://open.weixin.qq.com/connect/qrconnect#wechat_redirect";
++const DEFAULT_TOKEN_URL = "https://api.weixin.qq.com/sns/oauth2/access_token";
++const DEFAULT_USERINFO_URL = "https://api.weixin.qq.com/sns/userinfo";
++const DEFAULT_SCOPES = "snsapi_login";
++
++export function WeChatLoginConfigPanel({ rootRole, onNotice }: { rootRole?: string | null; onNotice: (message: string) => void }) {
++  const canEdit = rootRole === "rootSuperAdmin";
++  const [config, setConfig] = useState<WeChatOAuthConfig | null>(null);
++  const [enabled, setEnabled] = useState(false);
++  const [appId, setAppId] = useState("");
++  const [appSecret, setAppSecret] = useState("");
++  const [authorizationUrl, setAuthorizationUrl] = useState(DEFAULT_AUTHORIZATION_URL);
++  const [tokenUrl, setTokenUrl] = useState(DEFAULT_TOKEN_URL);
++  const [userInfoUrl, setUserInfoUrl] = useState(DEFAULT_USERINFO_URL);
++  const [scopes, setScopes] = useState(DEFAULT_SCOPES);
++  const [loading, setLoading] = useState(true);
++  const [saving, setSaving] = useState(false);
++  const [restartRequired, setRestartRequired] = useState(false);
++
++  useEffect(() => {
++    let mounted = true;
++    void getWeChatOAuthConfig()
++      .then((current) => { if (mounted && current) apply(current); })
++      .catch((error) => { if (mounted) onNotice(error instanceof Error ? error.message : "微信扫码登录配置读取失败"); })
++      .finally(() => { if (mounted) setLoading(false); });
++    return () => { mounted = false; };
++  }, [onNotice]);
++
++  const save = async () => {
++    if (!canEdit) return;
++    setSaving(true);
++    try {
++      const result = await saveWeChatOAuthConfig({
++        enabled,
++        appId,
++        appSecret: appSecret || undefined,
++        authorizationUrl: authorizationUrl || undefined,
++        tokenUrl: tokenUrl || undefined,
++        userInfoUrl: userInfoUrl || undefined,
++        scopes: scopes.split(/[\s,]+/).map((scope) => scope.trim()).filter(Boolean),
++      });
++      apply(result.config);
++      setAppSecret("");
++      setRestartRequired(result.restartRequired);
++      onNotice("微信扫码登录配置已保存");
++    } catch (error) {
++      onNotice(error instanceof Error ? error.message : "微信扫码登录配置保存失败");
++    } finally {
++      setSaving(false);
++    }
++  };
++
++  function apply(current: WeChatOAuthConfig) {
++    setConfig(current);
++    setEnabled(current.enabled);
++    setAppId(current.appId);
++    setAuthorizationUrl(current.authorizationUrl);
++    setTokenUrl(current.tokenUrl);
++    setUserInfoUrl(current.userInfoUrl);
++    setScopes(current.scopes.join(", "));
++  }
++
++  return (
++    <section className="surface national-identity-config" aria-labelledby="wechat-login-title">
++      <SectionHeading title="微信扫码登录" titleId="wechat-login-title" />
++      <p className="subplatform-intro">接入微信开放平台的「网站应用」扫码登录。请先在开放平台创建网站应用，并把本商城域名加入授权回调域；回调路径为 /api/auth/callback/wechat。</p>
++      <div className="seller-upload-form">
++        <label className="email-enabled seller-upload-wide"><input type="checkbox" checked={enabled} disabled={!canEdit || loading} onChange={(event) => setEnabled(event.target.checked)} />在登录页显示微信扫码登录</label>
++        <label htmlFor="wechat-login-app-id"><span>AppID</span><Input id="wechat-login-app-id" value={appId} disabled={!canEdit || loading} onChange={(event) => setAppId(event.target.value)} autoComplete="off" placeholder="wx0123456789abcdef" /></label>
++        <label htmlFor="wechat-login-app-secret"><span>AppSecret</span><Input id="wechat-login-app-secret" type="password" value={appSecret} disabled={!canEdit || loading} onChange={(event) => setAppSecret(event.target.value)} autoComplete="new-password" placeholder={config?.credentialConfigured ? "留空则保持当前密钥" : "填写开放平台分配的 AppSecret"} /></label>
++        <label htmlFor="wechat-login-scopes"><span>Scopes</span><Input id="wechat-login-scopes" value={scopes} disabled={!canEdit || loading} onChange={(event) => setScopes(event.target.value)} placeholder={DEFAULT_SCOPES} /></label>
++        <div className="national-identity-endpoints seller-upload-wide">
++          <label htmlFor="wechat-login-authorize"><span>授权地址</span><Input id="wechat-login-authorize" value={authorizationUrl} disabled={!canEdit || loading} onChange={(event) => setAuthorizationUrl(event.target.value)} inputMode="url" placeholder={DEFAULT_AUTHORIZATION_URL} /></label>
++          <label htmlFor="wechat-login-token"><span>令牌地址</span><Input id="wechat-login-token" value={tokenUrl} disabled={!canEdit || loading} onChange={(event) => setTokenUrl(event.target.value)} inputMode="url" placeholder={DEFAULT_TOKEN_URL} /></label>
++          <label htmlFor="wechat-login-userinfo"><span>用户信息地址</span><Input id="wechat-login-userinfo" value={userInfoUrl} disabled={!canEdit || loading} onChange={(event) => setUserInfoUrl(event.target.value)} inputMode="url" placeholder={DEFAULT_USERINFO_URL} /></label>
++        </div>
++        <div className="seller-upload-wide root-email-actions national-identity-actions">
++          <p><ShieldCheck size={16} aria-hidden="true" />AppSecret：{config?.credentialConfigured ? "已就绪" : "尚未写入"}</p>
++          {canEdit ? <button className="root-email-save" type="button" disabled={saving || loading} onClick={() => void save()}><Save size={16} aria-hidden="true" />{saving ? "保存中…" : "保存配置"}</button> : null}
++        </div>
++      </div>
++      {restartRequired ? <p className="national-identity-restart" role="status">配置已保存。微信扫码登录会在下一次 Web 服务重启后生效。</p> : null}
++      {!canEdit ? <p className="subplatform-intro">商城运营可以查看状态；接入凭据仅由商城负责人修改。</p> : null}
++    </section>
++  );
++}
+diff --git a/web/src/components/index.ts b/web/src/components/index.ts
+index ebe2a56..1094d29 100644
+--- a/web/src/components/index.ts
++++ b/web/src/components/index.ts
+@@ -56,4 +56,5 @@ export * from "./MallBrandPanel";
+ export * from "./MallCatalogModeration";
+ export * from "./RootEmailConfigPanel";
+ export * from "./NationalIdentityConfigPanel";
++export * from "./WeChatLoginConfigPanel";
+ export * from "./PhoneLoginConfigPanel";
+diff --git a/web/src/lib/auth.ts b/web/src/lib/auth.ts
+index e835612..c2e8392 100644
+--- a/web/src/lib/auth.ts
++++ b/web/src/lib/auth.ts
+@@ -29,6 +29,12 @@ import { isRootEmailAuthConfigured, sendConfiguredAuthEmail } from "./mail";
+ import { sendConfiguredPhoneOtp } from "./sms";
+ import { isProductionEnvironment } from "./runtime";
+ import { readManagedNationalIdentityConfig } from "./national-identity-config";
++import {
++  createWeChatTokenExchange,
++  createWeChatUserInfoLoader,
++  isWeChatNativeEndpoint,
++  readManagedWeChatOAuthConfig,
++} from "./wechat-oauth-config";
+ import { isUuid } from "./uuid";
+ 
+ const database = new Pool({
+@@ -716,7 +722,8 @@ function configuredOAuthProviders(): GenericOAuthConfig[] {
+     {
+       providerId: "wechat",
+       envKey: "WECHAT",
+-      defaultScopes: ["openid", "profile", "email"],
++      // WeChat Open Platform website QR login only understands its own scope.
++      defaultScopes: ["snsapi_login"],
+     },
+     {
+       providerId: "qq",
+@@ -736,15 +743,20 @@ function configuredOAuthProviders(): GenericOAuthConfig[] {
+       providerId === "national_identity"
+         ? readManagedNationalIdentityConfig()
+         : null;
+-    // A saved but disabled national-identity record intentionally wins over
+-    // deployment variables so an operator can turn the integration off from
+-    // the mall settings without deleting credentials from the host.
++    const managedWeChat =
++      providerId === "wechat" ? readManagedWeChatOAuthConfig() : null;
++    // A saved but disabled managed record intentionally wins over deployment
++    // variables so an operator can turn the integration off from the mall
++    // settings without deleting credentials from the host.
+     if (managedNationalIdentity && !managedNationalIdentity.enabled) return [];
++    if (managedWeChat && !managedWeChat.enabled) return [];
+     const clientId =
+       managedNationalIdentity?.clientId ??
++      managedWeChat?.appId ??
+       process.env[`${prefix}CLIENT_ID`]?.trim();
+     const clientSecret =
+       managedNationalIdentity?.clientSecret ??
++      managedWeChat?.appSecret ??
+       process.env[`${prefix}CLIENT_SECRET`]?.trim();
+     // Some approved identity gateways publish OIDC discovery, while others
+     // provide a fixed authorization/token/userinfo contract.  Never invent a
+@@ -756,13 +768,17 @@ function configuredOAuthProviders(): GenericOAuthConfig[] {
+     );
+     const authorizationUrl = safeOAuthUrl(
+       managedNationalIdentity?.authorizationUrl ??
++        managedWeChat?.authorizationUrl ??
+         process.env[`${prefix}AUTHORIZATION_URL`],
+     );
+     const tokenUrl = safeOAuthUrl(
+-      managedNationalIdentity?.tokenUrl ?? process.env[`${prefix}TOKEN_URL`],
++      managedNationalIdentity?.tokenUrl ??
++        managedWeChat?.tokenUrl ??
++        process.env[`${prefix}TOKEN_URL`],
+     );
+     const userInfoUrl = safeOAuthUrl(
+       managedNationalIdentity?.userInfoUrl ??
++        managedWeChat?.userInfoUrl ??
+         process.env[`${prefix}USERINFO_URL`],
+     );
+     const hasEndpointContract = Boolean(
+@@ -784,6 +800,14 @@ function configuredOAuthProviders(): GenericOAuthConfig[] {
+       return [];
+     }
+ 
++    // WeChat's own sns endpoints do not implement standard OAuth2. Apply the
++    // native-protocol adapter only for WeChat-hosted endpoints so a
++    // standards-compliant proxy or mock gateway keeps the default flow.
++    const wechatNativeProtocol =
++      providerId === "wechat" &&
++      !discoveryUrl &&
++      isWeChatNativeEndpoint(tokenUrl);
++
+     return [
+       {
+         providerId,
+@@ -826,7 +850,22 @@ function configuredOAuthProviders(): GenericOAuthConfig[] {
+         },
+         scopes:
+           managedNationalIdentity?.scopes ??
++          managedWeChat?.scopes ??
+           parseOAuthScopes(process.env[`${prefix}SCOPES`], defaultScopes),
++        ...(wechatNativeProtocol && clientId && clientSecret && tokenUrl && userInfoUrl
++          ? {
++              // The qrconnect page reads appid (client_id is ignored) and the
++              // sns token endpoint does not understand PKCE parameters.
++              pkce: false,
++              authorizationUrlParams: { appid: clientId },
++              getToken: createWeChatTokenExchange({
++                tokenUrl,
++                appId: clientId,
++                appSecret: clientSecret,
++              }),
++              getUserInfo: createWeChatUserInfoLoader({ userInfoUrl }),
++            }
++          : {}),
+         mapProfileToUser: (profile: Record<string, unknown>) => {
+           const subject = firstProfileString(
+             profile,
+diff --git a/web/src/lib/wechat-oauth-config.test.ts b/web/src/lib/wechat-oauth-config.test.ts
+new file mode 100644
+index 0000000..cbec4d2
+--- /dev/null
++++ b/web/src/lib/wechat-oauth-config.test.ts
+@@ -0,0 +1,240 @@
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
++
++const fsState = vi.hoisted(() => {
++  const files = new Map<string, string>();
++  const descriptors = new Map<number, string>();
++  let nextDescriptor = 3;
++  return { files, descriptors, allocate: () => nextDescriptor++ };
++});
++
++vi.mock("node:fs", () => {
++  const mocked = {
++    readFileSync: vi.fn((file: string) => {
++      const content = fsState.files.get(file);
++      if (content === undefined) throw Object.assign(new Error(`ENOENT: ${file}`), { code: "ENOENT" });
++      return content;
++    }),
++    openSync: vi.fn((file: string) => {
++      const descriptor = fsState.allocate();
++      fsState.descriptors.set(descriptor, file);
++      return descriptor;
++    }),
++    writeFileSync: vi.fn((descriptor: number, content: string) => {
++      const file = fsState.descriptors.get(descriptor);
++      if (!file) throw new Error("unknown file descriptor");
++      fsState.files.set(file, content);
++    }),
++    fsyncSync: vi.fn(),
++    closeSync: vi.fn(),
++    renameSync: vi.fn((from: string, to: string) => {
++      const content = fsState.files.get(from);
++      if (content === undefined) throw new Error(`missing temporary file ${from}`);
++      fsState.files.delete(from);
++      fsState.files.set(to, content);
++    }),
++    chmodSync: vi.fn(),
++    unlinkSync: vi.fn((file: string) => {
++      fsState.files.delete(file);
++    }),
++  };
++  return { ...mocked, default: mocked };
++});
++
++import {
++  createWeChatTokenExchange,
++  createWeChatUserInfoLoader,
++  getManagedWeChatOAuthConfig,
++  isWeChatNativeEndpoint,
++  readManagedWeChatOAuthConfig,
++  saveManagedWeChatOAuthConfig,
++  WECHAT_QR_AUTHORIZATION_URL,
++  WECHAT_TOKEN_URL,
++  WECHAT_USERINFO_URL,
++} from "./wechat-oauth-config";
++
++beforeEach(() => {
++  fsState.files.clear();
++  fsState.descriptors.clear();
++});
++
++afterEach(() => {
++  vi.unstubAllGlobals();
++  vi.clearAllMocks();
++});
++
++describe("managed wechat oauth config storage", () => {
++  it("returns null while nothing is configured", () => {
++    expect(getManagedWeChatOAuthConfig()).toBeNull();
++    expect(readManagedWeChatOAuthConfig()).toBeNull();
++  });
++
++  it("saves official QR connect endpoints by default", () => {
++    const config = saveManagedWeChatOAuthConfig({
++      enabled: true,
++      appId: " wx1234567890abcdef ",
++      appSecret: "app-secret-value",
++    });
++    expect(config).toEqual({
++      enabled: true,
++      appId: "wx1234567890abcdef",
++      scopes: ["snsapi_login"],
++      authorizationUrl: WECHAT_QR_AUTHORIZATION_URL,
++      tokenUrl: WECHAT_TOKEN_URL,
++      userInfoUrl: WECHAT_USERINFO_URL,
++      credentialConfigured: true,
++    });
++    expect(getManagedWeChatOAuthConfig()).toEqual(config);
++    expect(readManagedWeChatOAuthConfig()).toEqual({
++      enabled: true,
++      appId: "wx1234567890abcdef",
++      scopes: ["snsapi_login"],
++      authorizationUrl: WECHAT_QR_AUTHORIZATION_URL,
++      tokenUrl: WECHAT_TOKEN_URL,
++      userInfoUrl: WECHAT_USERINFO_URL,
++      appSecret: "app-secret-value",
++    });
++  });
++
++  it("keeps the stored AppSecret when the update omits it", () => {
++    saveManagedWeChatOAuthConfig({ enabled: true, appId: "wx1", appSecret: "keep-me" });
++    const updated = saveManagedWeChatOAuthConfig({ enabled: false, appId: "wx2" });
++    expect(updated.credentialConfigured).toBe(true);
++    expect(readManagedWeChatOAuthConfig()?.appSecret).toBe("keep-me");
++  });
++
++  it("refuses to enable the login without an AppSecret", () => {
++    expect(() => saveManagedWeChatOAuthConfig({ enabled: true, appId: "wx1" })).toThrow(/AppSecret/);
++    expect(getManagedWeChatOAuthConfig()).toBeNull();
++  });
++
++  it("rejects a non-HTTPS token endpoint", () => {
++    expect(() =>
++      saveManagedWeChatOAuthConfig({
++        enabled: false,
++        appId: "wx1",
++        tokenUrl: "http://insecure.example/token",
++      }),
++    ).toThrow(/令牌地址/);
++  });
++
++  it("only allows the documented #wechat_redirect fragment", () => {
++    expect(() =>
++      saveManagedWeChatOAuthConfig({
++        enabled: false,
++        appId: "wx1",
++        authorizationUrl: "https://open.weixin.qq.com/connect/qrconnect#other",
++      }),
++    ).toThrow(/授权地址/);
++    const config = saveManagedWeChatOAuthConfig({
++      enabled: false,
++      appId: "wx1",
++      authorizationUrl: "https://open.weixin.qq.com/connect/qrconnect#wechat_redirect",
++    });
++    expect(config.authorizationUrl).toBe("https://open.weixin.qq.com/connect/qrconnect#wechat_redirect");
++  });
++});
++
++describe("wechat native protocol adapter", () => {
++  it("only treats weixin.qq.com hosts as native endpoints", () => {
++    expect(isWeChatNativeEndpoint(WECHAT_TOKEN_URL)).toBe(true);
++    expect(isWeChatNativeEndpoint("https://open.weixin.qq.com/connect/qrconnect")).toBe(true);
++    expect(isWeChatNativeEndpoint("https://mock-gateway.example/token")).toBe(false);
++    expect(isWeChatNativeEndpoint("not a url")).toBe(false);
++    expect(isWeChatNativeEndpoint(undefined)).toBe(false);
++  });
++
++  it("exchanges the code with appid/secret query parameters", async () => {
++    const fetchMock = vi.fn().mockResolvedValue({
++      ok: true,
++      status: 200,
++      text: async () =>
++        JSON.stringify({
++          access_token: "ACCESS",
++          expires_in: 7200,
++          refresh_token: "REFRESH",
++          openid: "OPENID",
++          scope: "snsapi_login",
++          unionid: "UNIONID",
++        }),
++    });
++    vi.stubGlobal("fetch", fetchMock);
++    const exchange = createWeChatTokenExchange({
++      tokenUrl: WECHAT_TOKEN_URL,
++      appId: "wx-app",
++      appSecret: "wx-secret",
++    });
++    const tokens = await exchange({ code: "AUTH_CODE" });
++    const requested = new URL(fetchMock.mock.calls[0]?.[0] as string);
++    expect(requested.origin + requested.pathname).toBe(WECHAT_TOKEN_URL);
++    expect(requested.searchParams.get("appid")).toBe("wx-app");
++    expect(requested.searchParams.get("secret")).toBe("wx-secret");
++    expect(requested.searchParams.get("code")).toBe("AUTH_CODE");
++    expect(requested.searchParams.get("grant_type")).toBe("authorization_code");
++    expect(tokens.accessToken).toBe("ACCESS");
++    expect(tokens.refreshToken).toBe("REFRESH");
++    expect(tokens.scopes).toEqual(["snsapi_login"]);
++    expect(tokens.raw?.openid).toBe("OPENID");
++    expect(tokens.accessTokenExpiresAt).toBeInstanceOf(Date);
++  });
++
++  it("rejects WeChat errcode bodies even on HTTP 200", async () => {
++    vi.stubGlobal(
++      "fetch",
++      vi.fn().mockResolvedValue({
++        ok: true,
++        status: 200,
++        text: async () => JSON.stringify({ errcode: 40029, errmsg: "invalid code" }),
++      }),
++    );
++    const exchange = createWeChatTokenExchange({
++      tokenUrl: WECHAT_TOKEN_URL,
++      appId: "wx-app",
++      appSecret: "wx-secret",
++    });
++    await expect(exchange({ code: "BAD" })).rejects.toThrow(/40029/);
++  });
++
++  it("loads the profile with the token response's openid", async () => {
++    const fetchMock = vi.fn().mockResolvedValue({
++      ok: true,
++      status: 200,
++      text: async () =>
++        JSON.stringify({ openid: "OPENID", nickname: "微信用户", headimgurl: "https://cdn.example/avatar" }),
++    });
++    vi.stubGlobal("fetch", fetchMock);
++    const loadUserInfo = createWeChatUserInfoLoader({ userInfoUrl: WECHAT_USERINFO_URL });
++    const profile = await loadUserInfo({
++      accessToken: "ACCESS",
++      raw: { openid: "OPENID", unionid: "UNIONID" },
++    });
++    const requested = new URL(fetchMock.mock.calls[0]?.[0] as string);
++    expect(requested.searchParams.get("access_token")).toBe("ACCESS");
++    expect(requested.searchParams.get("openid")).toBe("OPENID");
++    expect(profile.openid).toBe("OPENID");
++    expect(profile.unionid).toBe("UNIONID");
++    expect(profile.nickname).toBe("微信用户");
++    expect(profile.emailVerified).toBe(false);
++  });
++
++  it("falls back to the token identity when the profile scope is missing", async () => {
++    vi.stubGlobal(
++      "fetch",
++      vi.fn().mockResolvedValue({
++        ok: true,
++        status: 200,
++        text: async () => JSON.stringify({ errcode: 48001, errmsg: "api unauthorized" }),
++      }),
++    );
++    const loadUserInfo = createWeChatUserInfoLoader({ userInfoUrl: WECHAT_USERINFO_URL });
++    const profile = await loadUserInfo({
++      accessToken: "ACCESS",
++      raw: { openid: "OPENID", unionid: "UNIONID" },
++    });
++    expect(profile).toEqual({ openid: "OPENID", unionid: "UNIONID", emailVerified: false });
++  });
++
++  it("requires the access token and openid before calling userinfo", async () => {
++    const loadUserInfo = createWeChatUserInfoLoader({ userInfoUrl: WECHAT_USERINFO_URL });
++    await expect(loadUserInfo({ raw: {} })).rejects.toThrow(/openid/);
++  });
++});
+diff --git a/web/src/lib/wechat-oauth-config.ts b/web/src/lib/wechat-oauth-config.ts
+new file mode 100644
+index 0000000..957f4da
+--- /dev/null
++++ b/web/src/lib/wechat-oauth-config.ts
+@@ -0,0 +1,246 @@
++import { chmodSync, closeSync, fsyncSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
++import { randomUUID } from "node:crypto";
++import path from "node:path";
++
++const SECRET_ROOT = "/etc/matchplane/secrets/root-email";
++const CONFIG_PATH = path.join(SECRET_ROOT, "wechat-oauth.json");
++const SECRET_PATH = path.join(SECRET_ROOT, "wechat-oauth-app-secret");
++
++// Official WeChat Open Platform "website application" QR-code login contract.
++// The #wechat_redirect fragment is part of the documented authorize URL format.
++export const WECHAT_QR_AUTHORIZATION_URL = "https://open.weixin.qq.com/connect/qrconnect#wechat_redirect";
++export const WECHAT_TOKEN_URL = "https://api.weixin.qq.com/sns/oauth2/access_token";
++export const WECHAT_USERINFO_URL = "https://api.weixin.qq.com/sns/userinfo";
++export const WECHAT_DEFAULT_SCOPES = ["snsapi_login"] as const;
++
++interface StoredWeChatOAuthConfig {
++  enabled: boolean;
++  appId: string;
++  scopes: string[];
++  authorizationUrl: string;
++  tokenUrl: string;
++  userInfoUrl: string;
++}
++
++export interface ManagedWeChatOAuthConfig extends StoredWeChatOAuthConfig {
++  credentialConfigured: boolean;
++}
++
++export interface ActiveWeChatOAuthConfig extends StoredWeChatOAuthConfig {
++  appSecret: string;
++}
++
++/** Reads the administrator-managed WeChat provider without ever returning its AppSecret to the browser. */
++export function readManagedWeChatOAuthConfig(): ActiveWeChatOAuthConfig | null {
++  try {
++    const parsed = normalizeStoredConfig(JSON.parse(readFileSync(CONFIG_PATH, "utf8")) as Partial<StoredWeChatOAuthConfig>);
++    const appSecret = readOptional(SECRET_PATH);
++    return appSecret ? { ...parsed, appSecret } : null;
++  } catch {
++    return null;
++  }
++}
++
++export function getManagedWeChatOAuthConfig(): ManagedWeChatOAuthConfig | null {
++  try {
++    const config = normalizeStoredConfig(JSON.parse(readFileSync(CONFIG_PATH, "utf8")) as Partial<StoredWeChatOAuthConfig>);
++    return { ...config, credentialConfigured: Boolean(readOptional(SECRET_PATH)) };
++  } catch {
++    return null;
++  }
++}
++
++export function saveManagedWeChatOAuthConfig(input: {
++  enabled: boolean;
++  appId: string;
++  appSecret?: string;
++  authorizationUrl?: string;
++  tokenUrl?: string;
++  userInfoUrl?: string;
++  scopes?: string[];
++}): ManagedWeChatOAuthConfig {
++  const config: StoredWeChatOAuthConfig = {
++    enabled: input.enabled,
++    appId: boundedText(input.appId, "AppID", 512),
++    scopes: normalizeScopes(input.scopes),
++    authorizationUrl: normalizeWeChatUrl(input.authorizationUrl?.trim() || WECHAT_QR_AUTHORIZATION_URL, "授权地址", true),
++    tokenUrl: normalizeWeChatUrl(input.tokenUrl?.trim() || WECHAT_TOKEN_URL, "令牌地址", false),
++    userInfoUrl: normalizeWeChatUrl(input.userInfoUrl?.trim() || WECHAT_USERINFO_URL, "用户信息地址", false),
++  };
++  if (input.appSecret !== undefined) writeProtected(SECRET_PATH, input.appSecret, "AppSecret");
++  const configured = Boolean(readOptional(SECRET_PATH));
++  if (config.enabled && !configured) throw new Error("启用前请填写 AppSecret");
++  writeProtected(CONFIG_PATH, JSON.stringify(config), "微信扫码登录配置");
++  return { ...config, credentialConfigured: configured };
++}
++
++/**
++ * WeChat's sns endpoints predate standard OAuth2: they only speak WeChat's own
++ * protocol. The adapters below are applied when the configured endpoints are
++ * WeChat-hosted; a standards-compliant proxy or mock gateway on another host
++ * keeps the default generic OAuth behaviour.
++ */
++export function isWeChatNativeEndpoint(value: string | undefined): boolean {
++  if (!value) return false;
++  try {
++    const hostname = new URL(value).hostname;
++    return hostname === "weixin.qq.com" || hostname.endsWith(".weixin.qq.com");
++  } catch {
++    return false;
++  }
++}
++
++export interface WeChatOAuthTokens {
++  tokenType?: string;
++  accessToken?: string;
++  refreshToken?: string;
++  accessTokenExpiresAt?: Date;
++  scopes?: string[];
++  raw?: Record<string, unknown>;
++}
++
++/**
++ * WeChat exchanges the authorization code through a GET request with
++ * appid/secret query parameters instead of a POSTed client_id/client_secret
++ * form, and reports failures as HTTP 200 bodies carrying errcode/errmsg.
++ */
++export function createWeChatTokenExchange(options: { tokenUrl: string; appId: string; appSecret: string }) {
++  return async (data: { code: string }): Promise<WeChatOAuthTokens> => {
++    const url = new URL(options.tokenUrl);
++    url.searchParams.set("appid", options.appId);
++    url.searchParams.set("secret", options.appSecret);
++    url.searchParams.set("code", data.code);
++    url.searchParams.set("grant_type", "authorization_code");
++    const body = await fetchWeChatJson(url, "微信令牌");
++    const accessToken = readString(body, "access_token");
++    if (!accessToken || !readString(body, "openid")) throw new Error("微信令牌响应缺少 access_token 或 openid");
++    const expiresIn = typeof body.expires_in === "number" && Number.isFinite(body.expires_in) ? body.expires_in : undefined;
++    return {
++      tokenType: "bearer",
++      accessToken,
++      refreshToken: readString(body, "refresh_token"),
++      accessTokenExpiresAt: expiresIn ? new Date(Date.now() + expiresIn * 1000) : undefined,
++      scopes: readString(body, "scope")?.split(",").filter(Boolean),
++      // Keeps openid/unionid available to the userinfo call below.
++      raw: body,
++    };
++  };
++}
++
++export interface WeChatUserProfile {
++  emailVerified: boolean;
++  name?: string;
++  email?: string;
++  image?: string;
++  [key: string]: unknown;
++}
++
++/**
++ * WeChat's userinfo endpoint requires the token response's openid as a query
++ * parameter next to the access token. When the granted scope cannot read the
++ * profile, login still proceeds on the stable openid/unionid identity.
++ */
++export function createWeChatUserInfoLoader(options: { userInfoUrl: string }) {
++  return async (tokens: WeChatOAuthTokens): Promise<WeChatUserProfile> => {
++    const accessToken = tokens.accessToken;
++    const openid = typeof tokens.raw?.openid === "string" ? tokens.raw.openid : undefined;
++    if (!accessToken || !openid) throw new Error("微信登录缺少 access_token 或 openid");
++    // WeChat never returns an email; the synthetic Better Auth address must stay unverified.
++    const identity: WeChatUserProfile = { openid, emailVerified: false };
++    if (typeof tokens.raw?.unionid === "string") identity.unionid = tokens.raw.unionid;
++    const url = new URL(options.userInfoUrl);
++    url.searchParams.set("access_token", accessToken);
++    url.searchParams.set("openid", openid);
++    url.searchParams.set("lang", "zh_CN");
++    try {
++      const body = await fetchWeChatJson(url, "微信用户信息");
++      return { ...body, ...identity, openid: readString(body, "openid") ?? openid } as WeChatUserProfile;
++    } catch {
++      return identity;
++    }
++  };
++}
++
++async function fetchWeChatJson(url: URL, label: string): Promise<Record<string, unknown>> {
++  const response = await fetch(url.toString(), { method: "GET", headers: { accept: "application/json" } });
++  // WeChat serves JSON bodies with a text/plain content type; parse the raw text.
++  const text = await response.text();
++  let body: Record<string, unknown>;
++  try {
++    const parsed: unknown = JSON.parse(text);
++    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error();
++    body = parsed as Record<string, unknown>;
++  } catch {
++    throw new Error(`${label}响应不是有效 JSON`);
++  }
++  const errcode = body.errcode;
++  if (!response.ok || (typeof errcode === "number" && errcode !== 0)) {
++    throw new Error(`${label}请求失败（errcode ${String(errcode ?? response.status)}）`);
++  }
++  return body;
++}
++
++function readString(body: Record<string, unknown>, key: string): string | undefined {
++  const value = body[key];
++  return typeof value === "string" && value.trim() ? value.trim() : undefined;
++}
++
++function normalizeStoredConfig(value: Partial<StoredWeChatOAuthConfig>): StoredWeChatOAuthConfig {
++  return {
++    enabled: value.enabled === true,
++    appId: boundedText(value.appId ?? "", "AppID", 512),
++    scopes: normalizeScopes(value.scopes),
++    authorizationUrl: normalizeWeChatUrl(value.authorizationUrl, "授权地址", true),
++    tokenUrl: normalizeWeChatUrl(value.tokenUrl, "令牌地址", false),
++    userInfoUrl: normalizeWeChatUrl(value.userInfoUrl, "用户信息地址", false),
++  };
++}
++
++function normalizeWeChatUrl(value: string | undefined, label: string, allowWeChatRedirectFragment: boolean): string {
++  try {
++    const url = new URL(value?.trim() ?? "");
++    const allowedHash = allowWeChatRedirectFragment && url.hash === "#wechat_redirect";
++    if (url.protocol !== "https:" || url.username || url.password || url.search || (url.hash && !allowedHash)) throw new Error();
++    return url.toString();
++  } catch {
++    throw new Error(`${label}必须是 HTTPS 地址，且不能包含凭据、查询参数或片段`);
++  }
++}
++
++function normalizeScopes(value: string[] | undefined): string[] {
++  const scopes = (value?.length ? value : [...WECHAT_DEFAULT_SCOPES])
++    .map((scope) => scope.trim())
++    .filter((scope) => /^[A-Za-z0-9._:-]{1,64}$/.test(scope));
++  if (!scopes.length) throw new Error("至少需要一个合法 scope");
++  return [...new Set(scopes)].slice(0, 16);
++}
++
++function boundedText(value: string, label: string, maximum: number): string {
++  const normalized = value.trim();
++  if (!normalized || normalized.length > maximum) throw new Error(`${label}必须为 1..=${maximum} 个字符`);
++  return normalized;
++}
++
++function readOptional(file: string): string | null {
++  try {
++    const value = readFileSync(file, "utf8").trim();
++    return value || null;
++  } catch {
++    return null;
++  }
++}
++
++function writeProtected(destination: string, value: string, label: string): void {
++  const content = value.trim();
++  if (!content || content.length > 16_384) throw new Error(`${label}必须为 1..=16384 个字符`);
++  const temporary = path.join(SECRET_ROOT, `.${path.basename(destination)}.${randomUUID()}.tmp`);
++  try {
++    const descriptor = openSync(temporary, "wx", 0o640);
++    try { writeFileSync(descriptor, `${content}\n`, "utf8"); fsyncSync(descriptor); } finally { closeSync(descriptor); }
++    renameSync(temporary, destination);
++    chmodSync(destination, 0o640);
++  } catch (error) {
++    try { unlinkSync(temporary); } catch { /* best effort cleanup */ }
++    throw error instanceof Error ? new Error(`${label}无法写入受保护存储`, { cause: error }) : new Error(`${label}无法写入受保护存储`);
++  }
++}
+diff --git a/web/src/wechat-oauth-route.test.ts b/web/src/wechat-oauth-route.test.ts
+new file mode 100644
+index 0000000..91006bb
+--- /dev/null
++++ b/web/src/wechat-oauth-route.test.ts
+@@ -0,0 +1,130 @@
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
++
++const {
++  getSession,
++  hasTrustedBrowserOrigin,
++  getManagedWeChatOAuthConfig,
++  saveManagedWeChatOAuthConfig,
++} = vi.hoisted(() => ({
++  getSession: vi.fn(),
++  hasTrustedBrowserOrigin: vi.fn(),
++  getManagedWeChatOAuthConfig: vi.fn(),
++  saveManagedWeChatOAuthConfig: vi.fn(),
++}));
++
++vi.mock("./lib/auth", () => ({ auth: { api: { getSession } } }));
++vi.mock("./lib/request-origin", () => ({ hasTrustedBrowserOrigin }));
++vi.mock("./lib/wechat-oauth-config", () => ({
++  getManagedWeChatOAuthConfig,
++  saveManagedWeChatOAuthConfig,
++}));
++
++import { GET, PATCH } from "../app/api/platform/wechat-oauth/config/route";
++
++const managedConfig = {
++  enabled: true,
++  appId: "wx1234567890abcdef",
++  scopes: ["snsapi_login"],
++  authorizationUrl: "https://open.weixin.qq.com/connect/qrconnect#wechat_redirect",
++  tokenUrl: "https://api.weixin.qq.com/sns/oauth2/access_token",
++  userInfoUrl: "https://api.weixin.qq.com/sns/userinfo",
++  credentialConfigured: true,
++};
++
++function getRequest(): Request {
++  return new Request("http://localhost/api/platform/wechat-oauth/config");
++}
++
++function patchRequest(body: unknown): Request {
++  return new Request("http://localhost/api/platform/wechat-oauth/config", {
++    method: "PATCH",
++    headers: { "content-type": "application/json" },
++    body: typeof body === "string" ? body : JSON.stringify(body),
++  });
++}
++
++beforeEach(() => {
++  getSession.mockResolvedValue({ user: { role: "rootSuperAdmin" } });
++  hasTrustedBrowserOrigin.mockReturnValue(true);
++  getManagedWeChatOAuthConfig.mockReturnValue(managedConfig);
++  saveManagedWeChatOAuthConfig.mockReturnValue(managedConfig);
++});
++
++afterEach(() => {
++  vi.clearAllMocks();
++});
++
++describe("wechat oauth config route", () => {
++  it("returns the managed config to mall staff without the AppSecret", async () => {
++    getSession.mockResolvedValue({ user: { role: "rootAdmin" } });
++    const response = await GET(getRequest());
++    expect(response.status).toBe(200);
++    const body = await response.json();
++    expect(body).toEqual({ config: managedConfig });
++    expect(JSON.stringify(body)).not.toContain("appSecret");
++  });
++
++  it("rejects reads from untrusted origins", async () => {
++    hasTrustedBrowserOrigin.mockReturnValue(false);
++    const response = await GET(getRequest());
++    expect(response.status).toBe(403);
++    expect(getManagedWeChatOAuthConfig).not.toHaveBeenCalled();
++  });
++
++  it("rejects reads from ordinary users", async () => {
++    getSession.mockResolvedValue({ user: { role: "user" } });
++    const response = await GET(getRequest());
++    expect(response.status).toBe(403);
++    expect(getManagedWeChatOAuthConfig).not.toHaveBeenCalled();
++  });
++
++  it("persists a normalized payload for the mall owner", async () => {
++    const response = await PATCH(
++      patchRequest({
++        enabled: true,
++        appId: "wx1234567890abcdef",
++        appSecret: "top-secret",
++        scopes: ["snsapi_login", 42],
++        authorizationUrl: "https://open.weixin.qq.com/connect/qrconnect#wechat_redirect",
++      }),
++    );
++    expect(response.status).toBe(200);
++    expect(saveManagedWeChatOAuthConfig).toHaveBeenCalledWith({
++      enabled: true,
++      appId: "wx1234567890abcdef",
++      appSecret: "top-secret",
++      authorizationUrl: "https://open.weixin.qq.com/connect/qrconnect#wechat_redirect",
++      tokenUrl: undefined,
++      userInfoUrl: undefined,
++      scopes: ["snsapi_login"],
++    });
++    await expect(response.json()).resolves.toEqual({
++      config: managedConfig,
++      restartRequired: true,
++    });
++  });
++
++  it("rejects writes from mall staff who are not the owner", async () => {
++    getSession.mockResolvedValue({ user: { role: "rootAdmin" } });
++    const response = await PATCH(patchRequest({ enabled: false, appId: "wx1" }));
++    expect(response.status).toBe(403);
++    expect(saveManagedWeChatOAuthConfig).not.toHaveBeenCalled();
++  });
++
++  it("rejects a non-object body", async () => {
++    const response = await PATCH(patchRequest(["not", "an", "object"]));
++    expect(response.status).toBe(400);
++    expect(saveManagedWeChatOAuthConfig).not.toHaveBeenCalled();
++  });
++
++  it("surfaces validation errors from the config store", async () => {
++    saveManagedWeChatOAuthConfig.mockImplementation(() => {
++      throw new Error("启用前请填写 AppSecret");
++    });
++    const response = await PATCH(patchRequest({ enabled: true, appId: "wx1" }));
++    expect(response.status).toBe(400);
++    await expect(response.json()).resolves.toEqual({
++      error: "启用前请填写 AppSecret",
++    });
++  });
++});
+-- 
+2.43.0
+

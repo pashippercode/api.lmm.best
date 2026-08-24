@@ -1,0 +1,738 @@
+From 1648258a87f6d6e7b4e77b5d43a25d555214a8ef Mon Sep 17 00:00:00 2001
+From: Cursor Agent <cursoragent@cursor.com>
+Date: Mon, 24 Aug 2026 13:25:01 +0000
+Subject: [PATCH 19/23] feat(demo): add challenge #11 car shop demo bootstrap
+ and review script
+
+Seed one hosted demo store (star-auto, slug demo-car-shop) with six publicly
+visible used-car offers through an explicit development-only boundary that
+follows the tests/integration/fixture.sql pattern: idempotent SQL plus a
+wrapper that stages hosted media files and refuses production profiles.
+The zh-CN demo script walks a reviewer through every challenge acceptance
+point: real product browsing, tool-based natural-language picking, the store
+page, consent-gated contact exchange, and mall settings.
+---
+ docs/challenge-11-demo-script.zh-CN.md   | 133 ++++++++++
+ docs/challenge-11-participation.zh-CN.md |   5 +
+ tools/demo/bootstrap-car-shop-demo.sh    |  95 +++++++
+ tools/demo/car-shop-seed.sql             | 300 +++++++++++++++++++++++
+ tools/demo/media/car-01.svg              |  17 ++
+ tools/demo/media/car-02.svg              |  17 ++
+ tools/demo/media/car-03.svg              |  17 ++
+ tools/demo/media/car-04.svg              |  17 ++
+ tools/demo/media/car-05.svg              |  17 ++
+ tools/demo/media/car-06.svg              |  17 ++
+ 10 files changed, 635 insertions(+)
+ create mode 100644 docs/challenge-11-demo-script.zh-CN.md
+ create mode 100755 tools/demo/bootstrap-car-shop-demo.sh
+ create mode 100644 tools/demo/car-shop-seed.sql
+ create mode 100644 tools/demo/media/car-01.svg
+ create mode 100644 tools/demo/media/car-02.svg
+ create mode 100644 tools/demo/media/car-03.svg
+ create mode 100644 tools/demo/media/car-04.svg
+ create mode 100644 tools/demo/media/car-05.svg
+ create mode 100644 tools/demo/media/car-06.svg
+
+diff --git a/docs/challenge-11-demo-script.zh-CN.md b/docs/challenge-11-demo-script.zh-CN.md
+new file mode 100644
+index 0000000..f5c5c6e
+--- /dev/null
++++ b/docs/challenge-11-demo-script.zh-CN.md
+@@ -0,0 +1,133 @@
++# 挑战 #11 演示脚本：卖车店铺点击路径
++
++> 挑战链接：https://api.lmm.best/challenges/11
++> 演示店铺：**星辰二手车行**（slug `demo-car-shop`，路径 `/demo-car-shop`）
++> 面向读者：发布者 / 评审（下称「评审」），以及负责搭建演示环境的操作员
++
++本脚本给出一条可以逐步点击验证的完整路径，覆盖挑战验收的五个关键点：
++真实商品浏览、自然语言选货（工具检索而非 RAG）、店铺页、双方同意的联系方式交换、商城设置。
++
++## 0. 操作员准备（一次性，评审无需操作）
++
++依赖见 `README.zh-CN.md`（Rust、Bun、just、Docker Compose）。在仓库根目录执行：
++
++```sh
++cp .env.example .env        # 开发配置，已默认 MATCHPLANE_ALLOW_DEMO_BOOTSTRAP=true
++just dev                    # 启动 PostgreSQL / Kafka / Valkey / 服务 / web
++just migrate                # 应用数据库迁移
++./tools/demo/bootstrap-car-shop-demo.sh   # 种入演示卖车店铺与 6 辆在售车
++```
++
++引导脚本会输出演示租户 ID（默认 `00000000-0000-7000-8000-000000001100`）。
++把它写入 `.env` 的 `MATCHPLANE_ROOT_TENANT_ID=` 后重启 web 服务：
++
++```sh
++docker compose --env-file .env -f deploy/compose/compose.yaml up -d web
++```
++
++种子内容（与 `tools/demo/car-shop-seed.sql` 一一对应）：
++
++| 车辆 | 品类 | 一口价 |
++| --- | --- | --- |
++| 比亚迪 宋PLUS DM-i 2023款 110KM 旗舰型 | SUV | ¥126,800 |
++| 特斯拉 Model 3 2022款 后轮驱动版 | 轿车 | ¥169,800 |
++| 大众 高尔夫 2021款 280TSI DSG 舒适型 | 轿车 | ¥89,800 |
++| 丰田 卡罗拉 双擎 2022款 1.8L E-CVT 精英版 | 轿车 | ¥99,800 |
++| 理想 L7 2023款 Pro | SUV | ¥259,800 |
++| 本田 CR-V 2020款 240TURBO CVT 两驱舒适版 | SUV | ¥132,800 |
++
++种子只创建店铺、商品与图片，不创建任何账号、支付配置或联系方式；
++联系方式交换必须由真实注册账号在界面里完成（见第 4 步）。
++
++## 1. 浏览真实商品（首页）
++
++1. 打开 `http://localhost:4173/`。
++2. 首屏即「精选在售」商品货架：6 张车辆卡片，含实拍位图、品牌/品类/车况/所在地和一口价。
++   商品先于对话入口出现——这是「产品优先、去 AI 味」的直接体现。
++3. 任选一张卡片点击 ❤ 点赞，计数实时 +1（写入 `marketplace_offer_likes`，刷新后保留）。
++4. 顶部分类条可按「SUV / 轿车」过滤。
++
++## 2. 自然语言选货（工具检索，非 RAG）
++
++1. 回到首页顶部输入框，输入：**「预算 15 万以内的家用 SUV」**。
++2. 点击 **「帮我找」**。输入会预填进选货员对话框并直接发起检索。
++3. 预期结果：预算被解析为「最高 15 万」，超出预算的 **理想 L7（¥259,800）** 与
++   **Model 3（¥169,800）** 被过滤，返回的候选（宋PLUS、CR-V、卡罗拉、高尔夫）都带
++   「价格符合预算」等可解释理由；配置 AI 网关后还会进一步按 SUV 品类收窄。
++4. 验证「工具检索而非 RAG」：选货员的候选来自服务端实时读取在售商品
++   （`web/src/storefront-search.ts` 的确定性查询），不是向量召回的文档片段。
++   可以现场佐证：在管理端下架任意一辆车后重新提问，该车立即从候选中消失。
++
++## 3. 店铺页
++
++1. 点击首页「浏览店铺」，或直接打开 `http://localhost:4173/demo-car-shop`。
++2. 店铺页展示「星辰二手车行」的介绍（268 项检测、支持第三方复检）与全部在售车辆。
++3. 点开任意车辆查看详情：多字段车况事实、描述、价格；AI 店长可以就这辆车继续问答，
++   需要时可通知店员介入。
++
++## 4. 联系方式交换（双方同意，不能手填）
++
++联系方式交换只使用 Better Auth 验证过的邮箱/手机绑定，需要两个真实账号：
++
++1. **买家账号**：评审在 `/login` 注册（开发档 `MATCHPLANE_ALLOW_DEMO_BOOTSTRAP=true`
++   免 SMTP 即可注册），在「账号 → 身份绑定」里完成邮箱或手机验证。
++2. **卖家账号**：操作员用另一账号登录，在首页点「发布商品」开一家托管店铺，
++   发布一辆测试车并由管理员审核上架（这一步同时演示了完整的卖家开店流程）。
++3. 买家在该店铺会话中对具体车辆发起 **「交换联系方式」**；界面明确提示
++   「平台不再接受手填联系方式」。
++4. 卖家在卖家工作台收到请求并点击 **「确认联系方式交换」**。
++5. 双方各自看到对方**已验证**的邮箱/手机；任何一方拒绝则「没有交换任何联系方式」。
++
++> 注意：种子店铺（星辰二手车行）的卖家侧是种入的供给方记录，没有绑定真实账号，
++> 因此这一步请用第 2 点的真实卖家店铺演示，符合「双方账号都完成验证」的验收口径。
++
++## 5. 商城设置（平台负责人视角）
++
++1. 用首个注册账号（开发档下即根管理员）打开 `http://localhost:4173/admin`。
++2. 平台就绪面板：确认根租户、根组织、店铺注册状态一目了然。
++3. **AI 网关配置**：填入平台自有模型网关（URL / 密钥 / 模型名），面板明确说明
++   「工具结果由服务端重新读取；模型不能读取联系方式、密钥或未审核商品」。
++   未配置时选货员自动退化为确定性检索，演示不中断。
++4. 登录方式：可选启用微信 / 手机号 / 国家网络身份等登录（`.env` 中对应 OAuth 配置）。
++5. 商品审核：管理端「商品审核」列表处理卖家新发布的车辆，上架后立即出现在首页货架。
++
++## 6. 验收对照
++
++| 挑战验收点 | 演示位置 |
++| --- | --- |
++| 首页先看真实商品、可点赞 | 第 1 步 |
++| 自然语言描述需求 → 工具检索选货 | 第 2 步 |
++| 卖车店铺页与车辆详情 | 第 3 步 |
++| 已验证联系方式、双方同意后交换 | 第 4 步 |
++| 平台负责人配置 AI 网关 / 登录方式 | 第 5 步 |
++
++## 附录 A：给种子店铺追加车辆（可选）
++
++引导脚本打印过一次性的卖家 API 令牌（只存 SHA-256）。用它可以走公开的通用市场合约
++继续发布车辆（发布后仍需管理员审核上架）：
++
++```sh
++curl -s -H 'content-type: application/json' \
++  -H "authorization: Bearer <seller API token>" \
++  -H 'x-matchplane-platform-path: /demo-car-shop' \
++  --data '{
++    "tenant_id": "<演示租户 ID>",
++    "domain_id": "00000000-0000-7000-8000-000000001101",
++    "supply_party_id": "00000000-0000-7000-8000-000000001105",
++    "external_key": "demo-car-extra-1",
++    "display_name": "五菱 缤果 2023款 333KM 豪华型",
++    "attributes": {"description": "2023 年上牌，1 万公里", "brand": "五菱", "category": "轿车"},
++    "terms": {"amount": "56800", "currency": "CNY", "scale": 0}
++  }' http://127.0.0.1:8080/v1/marketplace/offers
++```
++
++## 附录 B：重置演示
++
++种子是幂等的，重复执行不会产生重复数据。需要彻底重置时：
++
++```sh
++just down
++docker volume rm compose_postgres-data   # 名称以 docker volume ls 输出为准
++rm -rf deploy/compose/var/hosted-media/<演示租户 ID>
++just dev && just migrate && ./tools/demo/bootstrap-car-shop-demo.sh
++```
+diff --git a/docs/challenge-11-participation.zh-CN.md b/docs/challenge-11-participation.zh-CN.md
+index f7c0506..ded6433 100644
+--- a/docs/challenge-11-participation.zh-CN.md
++++ b/docs/challenge-11-participation.zh-CN.md
+@@ -62,6 +62,11 @@ matchplane serve gateway
+ 
+ - 商城首页增加 **自然语言需求入口**（「帮我找」），商品仍居首屏，选货员为辅助
+ - 输入内容预填到选货员对话框，降低发现成本，符合「直接用自然语言描述需求」
++- 新增 **卖车店铺演示引导**：`tools/demo/bootstrap-car-shop-demo.sh` 一条命令种入
++  托管店铺「星辰二手车行」（slug `demo-car-shop`）与 6 辆可公开浏览的在售车
++  （幂等、仅限开发档，遵循 `tests/integration/fixture.sql` 的显式数据边界）
++- 新增 **评审演示脚本** [docs/challenge-11-demo-script.zh-CN.md](challenge-11-demo-script.zh-CN.md)，
++  按验收点逐步给出可点击路径
+ - 导购 Agent 系统提示明确：模糊购买意向先用 `ask_user` 问 **预算档位**，下一轮问 **主要用途**，
+   条件足够立即通过 `search_public_products` 检索并默认 `show_products` 展示商品卡
+ - 首页对话快捷示例改为卖车场景（「预算 15 万以内，帮我找一台家用 SUV」），与首页需求入口一致
+diff --git a/tools/demo/bootstrap-car-shop-demo.sh b/tools/demo/bootstrap-car-shop-demo.sh
+new file mode 100755
+index 0000000..78626db
+--- /dev/null
++++ b/tools/demo/bootstrap-car-shop-demo.sh
+@@ -0,0 +1,95 @@
++#!/usr/bin/env bash
++set -euo pipefail
++
++# Challenge #11 demo bootstrap: one hosted car-selling store with six public offers.
++#
++# This is a development-only convenience, the seeded records live in tools/demo/car-shop-seed.sql
++# (the same explicit-boundary pattern as tests/integration/fixture.sql).  It never runs against a
++# production profile and never touches accounts, payments, or SMTP configuration.
++#
++# Usage (from the repository root, with local Compose running and migrations applied):
++#   just migrate
++#   ./tools/demo/bootstrap-car-shop-demo.sh
++#
++# Recognized environment overrides (compose development defaults otherwise):
++#   MATCHPLANE_DATABASE_URL           postgres://matchplane:matchplane_dev_only@127.0.0.1:5432/matchplane
++#   MATCHPLANE_ROOT_TENANT_ID         reuse an already-provisioned root tenant
++#   MATCHPLANE_HOSTED_MEDIA_HOST_ROOT host directory mounted at /var/lib/matchplane/media in Compose
++
++demo_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
++repo_root=$(cd "$demo_dir/../.." && pwd)
++
++read_env_file_value() {
++  local key=$1
++  [[ -f "$repo_root/.env" ]] || return 0
++  sed -n "s/^${key}=//p" "$repo_root/.env" | tail -n 1
++}
++
++environment=${MATCHPLANE_ENVIRONMENT:-$(read_env_file_value MATCHPLANE_ENVIRONMENT)}
++if [[ "${environment:-development}" == "production" ]]; then
++  echo "refusing to seed demo data into a production profile" >&2
++  exit 1
++fi
++
++database_url=${MATCHPLANE_DATABASE_URL:-$(read_env_file_value MATCHPLANE_DATABASE_URL)}
++database_url=${database_url:-postgres://matchplane:matchplane_dev_only@127.0.0.1:5432/matchplane}
++
++tenant_id=${MATCHPLANE_ROOT_TENANT_ID:-$(read_env_file_value MATCHPLANE_ROOT_TENANT_ID)}
++tenant_id=${tenant_id:-00000000-0000-7000-8000-000000001100}
++if ! [[ "$tenant_id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ ]]; then
++  echo "MATCHPLANE_ROOT_TENANT_ID must be a lowercase UUID, got: $tenant_id" >&2
++  exit 1
++fi
++
++media_host_root=${MATCHPLANE_HOSTED_MEDIA_HOST_ROOT:-$(read_env_file_value MATCHPLANE_HOSTED_MEDIA_HOST_ROOT)}
++media_host_root=${media_host_root:-$repo_root/deploy/compose/var/hosted-media}
++
++command -v psql >/dev/null || {
++  echo "psql is required (for example: apt install postgresql-client)" >&2
++  exit 1
++}
++
++store_id=00000000-0000-7000-8000-000000001104
++store_media_dir="$media_host_root/$tenant_id/$store_id"
++mkdir -p "$store_media_dir"
++
++# Copy the demo images to the hosted-media layout and collect size/sha256 psql variables.
++psql_media_args=()
++for index in 1 2 3 4 5 6; do
++  source_file="$demo_dir/media/car-0${index}.svg"
++  media_id="00000000-0000-7000-8000-00000000111${index}"
++  cp "$source_file" "$store_media_dir/$media_id.svg"
++  size=$(wc -c < "$source_file" | tr -d ' ')
++  sha=$(sha256sum "$source_file" | cut -d' ' -f1)
++  psql_media_args+=(-v "media${index}_size=$size" -v "media${index}_sha=$sha")
++done
++
++# High-entropy capability token for the seeded seller party.  Only its SHA-256 is stored; the
++# raw value is printed once so more cars can be published through /v1/marketplace/offers.
++seller_token="demo-$(head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')"
++
++psql "$database_url" \
++  --set=ON_ERROR_STOP=1 \
++  -v tenant_id="$tenant_id" \
++  -v seller_token="$seller_token" \
++  "${psql_media_args[@]}" \
++  -f "$demo_dir/car-shop-seed.sql"
++
++cat <<SUMMARY
++
++Challenge #11 car shop demo is seeded.
++
++  demo tenant id     $tenant_id
++  demo store slug    demo-car-shop
++  storefront path    /demo-car-shop
++  hosted media dir   $store_media_dir
++  seller API token   $seller_token   (shown once; SHA-256 stored)
++
++Next steps when this created a new tenant:
++  1. Set MATCHPLANE_ROOT_TENANT_ID=$tenant_id in .env and restart the web service.
++  2. Register the first account on /login (development profile with
++     MATCHPLANE_ALLOW_DEMO_BOOTSTRAP=true skips the SMTP requirement).
++  3. Open / for the buyer mall and /demo-car-shop for the store page.
++
++See docs/challenge-11-demo-script.zh-CN.md for the full sponsor click path.
++SUMMARY
+diff --git a/tools/demo/car-shop-seed.sql b/tools/demo/car-shop-seed.sql
+new file mode 100644
+index 0000000..20bbd68
+--- /dev/null
++++ b/tools/demo/car-shop-seed.sql
+@@ -0,0 +1,300 @@
++-- Challenge #11 car-selling shop demo seed.
++--
++-- MatchPlane's core never fabricates marketplace data.  Exactly like
++-- tests/integration/fixture.sql, this file is an explicit development-only boundary: it creates
++-- one hosted demo store ("星辰二手车行", slug `demo-car-shop`) with six publicly visible used-car
++-- offers so a reviewer can click through the whole buyer path without hand-entering products.
++-- Run it through tools/demo/bootstrap-car-shop-demo.sh, never against a production database.
++--
++-- Required psql variables (the wrapper script provides all of them):
++--   tenant_id     root tenant UUID (existing, or created here with slug `demo-mall`)
++--   seller_token  raw capability token for the seeded seller party (stored as SHA-256 only)
++--   media1_size..media6_size / media1_sha..media6_sha
++--                 byte size and hex SHA-256 of tools/demo/media/car-01.svg .. car-06.svg
++
++\set ON_ERROR_STOP on
++
++BEGIN;
++
++-- Session-local copy of the tenant id so plpgsql assertion blocks can read it.
++SET LOCAL matchplane.demo_tenant_id = :'tenant_id';
++
++-- 1. Tenant and demo domain -----------------------------------------------------------------
++INSERT INTO tenants (id, slug, name)
++VALUES (:'tenant_id'::uuid, 'demo-mall', '星辰演示商城')
++ON CONFLICT (id) DO NOTHING;
++
++INSERT INTO domains (id, tenant_id, slug, name)
++VALUES ('00000000-0000-7000-8000-000000001101', :'tenant_id'::uuid, 'demo-car-domain', '星辰二手车行')
++ON CONFLICT (id) DO NOTHING;
++
++-- 2. Default legal documents ----------------------------------------------------------------
++-- Migration 202608210003 seeds these only for tenants that already exist when it runs.  A
++-- tenant provisioned afterwards has none, and account registration requires both documents.
++INSERT INTO mall_legal_documents (tenant_id, kind, content)
++VALUES
++  (:'tenant_id'::uuid, 'terms', $doc$# 用户协议
++
++生效日期：以本页面显示的更新时间为准。
++
++1. 服务说明
++{{mall_name}} 提供商品浏览、店铺检索、撮合与相关服务。商品的展示、价格、库存和履约信息由对应店铺负责。
++
++2. 账号使用
++请使用真实、合法的信息注册和使用账号，并妥善保管登录凭据。不得利用本服务从事违法、侵权、欺诈或干扰平台正常运行的行为。
++
++3. 商品与交易
++下单、联系店铺或线下成交前，请自行核实商品信息和交易条件。除法律另有规定外，具体交易由用户与店铺按照双方确认的条件完成。
++
++4. 平台规则
++我们可以为保障安全、合规和服务质量，对违规内容、账号或店铺采取必要措施，并会在适用法律要求的范围内告知你。
++
++5. 联系我们
++如对本协议有疑问，请通过商城公开的联系方式与我们联系。$doc$),
++  (:'tenant_id'::uuid, 'privacy', $doc$# 隐私政策
++
++生效日期：以本页面显示的更新时间为准。
++
++1. 我们收集的信息
++为了提供账号、商品浏览、联系撮合和安全保障服务，{{mall_name}} 可能处理你的账号资料、设备与访问记录，以及你主动提交的商品或沟通信息。
++
++2. 信息的使用
++我们仅在提供、维护和改进服务，保障交易安全，履行法定义务以及取得你同意的范围内使用这些信息。
++
++3. 信息的共享
++我们不会公开你的联系方式。只有在你和对方均明确同意、或法律法规要求时，才会按相应流程提供必要信息。
++
++4. 信息安全
++我们采取合理的技术和管理措施保护信息安全。请勿向他人泄露密码、验证码或其他登录凭据。
++
++5. 你的权利
++你可以在账号页面更新个人资料、管理登录方式和会话；也可以通过商城公开的联系方式咨询、更正或删除相关信息。
++
++6. 政策更新
++本政策更新后会在此页面公布；重大变化会以适当方式提示。$doc$)
++ON CONFLICT (tenant_id, kind) DO NOTHING;
++
++-- 3. Root organization (development shortcut) -----------------------------------------------
++-- The product path creates the root organization through the Better Auth bridge in the platform
++-- readiness panel.  For a repeatable demo the seed creates a minimal marker only when the tenant
++-- has none yet; an operator-initialized root organization is always reused untouched.
++INSERT INTO "organization" (id, name, slug, "createdAt", metadata, "tenantId", "rootPlatform")
++SELECT '00000000-0000-7000-8000-000000001102'::uuid,
++       tenant.name,
++       'demo-mall-root-' || left(:'tenant_id', 8),
++       clock_timestamp(),
++       json_build_object('tenantId', :'tenant_id', 'rootPlatform', true)::text,
++       :'tenant_id',
++       true
++  FROM tenants tenant
++ WHERE tenant.id = :'tenant_id'::uuid
++   AND NOT EXISTS (
++        SELECT 1 FROM "organization"
++         WHERE "tenantId" = :'tenant_id' AND "rootPlatform" = true
++   )
++ON CONFLICT (slug) DO NOTHING;
++
++DO $$
++BEGIN
++    IF NOT EXISTS (
++        SELECT 1 FROM "organization"
++         WHERE "tenantId" = current_setting('matchplane.demo_tenant_id')
++           AND "rootPlatform" = true
++    ) THEN
++        RAISE EXCEPTION 'demo seed could not find or create the root organization for tenant %',
++            current_setting('matchplane.demo_tenant_id');
++    END IF;
++END;
++$$;
++
++-- 4. Hosted store organization, store, canonical path, commercial terms ----------------------
++INSERT INTO "organization"
++  (id, name, slug, "createdAt", metadata, "tenantId", "domainId", "parentOrganizationId", "rootPlatform")
++SELECT '00000000-0000-7000-8000-000000001103'::uuid,
++       '星辰二手车行',
++       'demo-car-shop',
++       clock_timestamp(),
++       json_build_object('storeId', '00000000-0000-7000-8000-000000001104', 'integrationKind', 'hosted')::text,
++       :'tenant_id',
++       '00000000-0000-7000-8000-000000001101',
++       root_org.id,
++       false
++  FROM "organization" root_org
++ WHERE root_org."tenantId" = :'tenant_id' AND root_org."rootPlatform" = true
++ON CONFLICT (id) DO NOTHING;
++
++INSERT INTO stores
++  (id, tenant_id, organization_id, domain_id, slug, display_name, description,
++   status, visibility, integration_kind, created_by)
++VALUES
++  ('00000000-0000-7000-8000-000000001104',
++   :'tenant_id'::uuid,
++   '00000000-0000-7000-8000-000000001103',
++   '00000000-0000-7000-8000-000000001101',
++   'demo-car-shop',
++   '星辰二手车行',
++   '主营家用二手车与准新车：全车 268 项检测、无重大事故承诺、支持第三方复检与过户代办。到店可试驾，支持异地送车。',
++   'active', 'public', 'hosted', 'challenge-11-demo-bootstrap')
++ON CONFLICT (id) DO NOTHING;
++
++INSERT INTO store_path_aliases (tenant_id, store_id, path, is_canonical)
++VALUES (:'tenant_id'::uuid, '00000000-0000-7000-8000-000000001104', '/demo-car-shop', true)
++ON CONFLICT (tenant_id, path) DO NOTHING;
++
++INSERT INTO store_commercial_terms (tenant_id, store_id)
++VALUES (:'tenant_id'::uuid, '00000000-0000-7000-8000-000000001104')
++ON CONFLICT (tenant_id, store_id) DO NOTHING;
++
++-- 5. Hosted product images -------------------------------------------------------------------
++-- Files are copied by the wrapper to $MATCHPLANE_HOSTED_MEDIA_ROOT/<tenant>/<store>/<storage_key>.
++INSERT INTO hosted_store_media
++  (id, tenant_id, store_id, uploader_subject, storage_key, file_name, media_type, size_bytes, sha256, status)
++VALUES
++  ('00000000-0000-7000-8000-000000001111', :'tenant_id'::uuid, '00000000-0000-7000-8000-000000001104',
++   'challenge-11-demo-bootstrap', '00000000-0000-7000-8000-000000001111.svg', 'car-01.svg', 'image/svg+xml',
++   :'media1_size', decode(:'media1_sha', 'hex'), 'published'),
++  ('00000000-0000-7000-8000-000000001112', :'tenant_id'::uuid, '00000000-0000-7000-8000-000000001104',
++   'challenge-11-demo-bootstrap', '00000000-0000-7000-8000-000000001112.svg', 'car-02.svg', 'image/svg+xml',
++   :'media2_size', decode(:'media2_sha', 'hex'), 'published'),
++  ('00000000-0000-7000-8000-000000001113', :'tenant_id'::uuid, '00000000-0000-7000-8000-000000001104',
++   'challenge-11-demo-bootstrap', '00000000-0000-7000-8000-000000001113.svg', 'car-03.svg', 'image/svg+xml',
++   :'media3_size', decode(:'media3_sha', 'hex'), 'published'),
++  ('00000000-0000-7000-8000-000000001114', :'tenant_id'::uuid, '00000000-0000-7000-8000-000000001104',
++   'challenge-11-demo-bootstrap', '00000000-0000-7000-8000-000000001114.svg', 'car-04.svg', 'image/svg+xml',
++   :'media4_size', decode(:'media4_sha', 'hex'), 'published'),
++  ('00000000-0000-7000-8000-000000001115', :'tenant_id'::uuid, '00000000-0000-7000-8000-000000001104',
++   'challenge-11-demo-bootstrap', '00000000-0000-7000-8000-000000001115.svg', 'car-05.svg', 'image/svg+xml',
++   :'media5_size', decode(:'media5_sha', 'hex'), 'published'),
++  ('00000000-0000-7000-8000-000000001116', :'tenant_id'::uuid, '00000000-0000-7000-8000-000000001104',
++   'challenge-11-demo-bootstrap', '00000000-0000-7000-8000-000000001116.svg', 'car-06.svg', 'image/svg+xml',
++   :'media6_size', decode(:'media6_sha', 'hex'), 'published')
++ON CONFLICT (id) DO NOTHING;
++
++-- 6. Seller party ------------------------------------------------------------------------------
++-- The canonical-path trigger assigns store_id.  The contact ciphertext is an inert placeholder:
++-- contact exchange must be demonstrated with real verified accounts through the UI, never with
++-- this seeded record.  The capability token hash follows the marketplace bridge contract
++-- (SHA-256 of the raw token), so the printed token can be used against /v1/marketplace/offers.
++INSERT INTO marketplace_parties
++  (id, tenant_id, scope_domain_id, platform_path, external_key, display_name, role,
++   marketplace_sides, access_token_hash, contact_ciphertext, contact_nonce, contact_key_version)
++VALUES
++  ('00000000-0000-7000-8000-000000001105',
++   :'tenant_id'::uuid,
++   '00000000-0000-7000-8000-000000001101',
++   '/demo-car-shop',
++   'challenge-11-demo-seller',
++   '星辰二手车行',
++   'seller',
++   ARRAY['supply']::text[],
++   sha256(convert_to(:'seller_token', 'UTF8')),
++   convert_to('challenge-11-demo-placeholder', 'UTF8'),
++   decode('000000000000000000000000', 'hex'),
++   1)
++ON CONFLICT (id) DO NOTHING;
++
++-- 7. Six publicly visible car offers -----------------------------------------------------------
++-- Every offer satisfies the public storefront contract enforced by web/src/storefront-search.ts:
++-- non-empty description, a hosted image reference, and fixed CNY pricing.
++INSERT INTO marketplace_offers
++  (id, tenant_id, domain_id, supply_party_id, external_key, display_name, attributes, terms, status, published_at)
++VALUES
++  ('00000000-0000-7000-8000-000000001121', :'tenant_id'::uuid, '00000000-0000-7000-8000-000000001101',
++   '00000000-0000-7000-8000-000000001105', 'demo-car-byd-song-plus',
++   '比亚迪 宋PLUS DM-i 2023款 110KM 旗舰型',
++   jsonb_build_object(
++     'description', '2023 年 5 月上牌，行驶 2.1 万公里，个人一手车。插电混动，市区通勤可用纯电，亏电油耗约 4.5L。全车原版原漆，无事故无泡水，支持任意第三方检测。免购置税，可协助过户与转分期。',
++     'brand', '比亚迪', 'model', '宋PLUS DM-i 2023款 110KM 旗舰型', 'category', 'SUV',
++     'condition', '二手 · 准新车', 'location', '北京 · 朝阳', 'delivery_mode', '到店自提 / 同城送车',
++     'stock_quantity', 1,
++     'attachments', jsonb_build_array(jsonb_build_object(
++       'kind', 'image', 'file_name', 'car-01.svg', 'media_type', 'image/svg+xml',
++       'attachment_ref', 'media://hosted/00000000-0000-7000-8000-000000001111',
++       'metadata', jsonb_build_object('public_url', '/api/store-media/00000000-0000-7000-8000-000000001111')))),
++   jsonb_build_object('pricing_mode', 'fixed', 'amount_minor', '12680000', 'currency', 'CNY', 'currency_scale', 2),
++   'active', clock_timestamp()),
++  ('00000000-0000-7000-8000-000000001122', :'tenant_id'::uuid, '00000000-0000-7000-8000-000000001101',
++   '00000000-0000-7000-8000-000000001105', 'demo-car-tesla-model-3',
++   '特斯拉 Model 3 2022款 后轮驱动版',
++   jsonb_build_object(
++     'description', '2022 年 8 月上牌，行驶 3.6 万公里，纯电轿车。CLTC 续航 556 公里，电池健康度 93%，带官方质保。车机为 AMD 平台，支持免费超充额度转移。全程 4S 保养记录可查。',
++     'brand', '特斯拉', 'model', 'Model 3 2022款 后轮驱动版', 'category', '轿车',
++     'condition', '二手 · 车况优秀', 'location', '北京 · 朝阳', 'delivery_mode', '到店自提 / 同城送车',
++     'stock_quantity', 1,
++     'attachments', jsonb_build_array(jsonb_build_object(
++       'kind', 'image', 'file_name', 'car-02.svg', 'media_type', 'image/svg+xml',
++       'attachment_ref', 'media://hosted/00000000-0000-7000-8000-000000001112',
++       'metadata', jsonb_build_object('public_url', '/api/store-media/00000000-0000-7000-8000-000000001112')))),
++   jsonb_build_object('pricing_mode', 'fixed', 'amount_minor', '16980000', 'currency', 'CNY', 'currency_scale', 2),
++   'active', clock_timestamp()),
++  ('00000000-0000-7000-8000-000000001123', :'tenant_id'::uuid, '00000000-0000-7000-8000-000000001101',
++   '00000000-0000-7000-8000-000000001105', 'demo-car-vw-golf',
++   '大众 高尔夫 2021款 280TSI DSG 舒适型',
++   jsonb_build_object(
++     'description', '2021 年 3 月上牌，行驶 4.8 万公里。1.4T 双离合，市区代步灵活省油，综合油耗约 6L。右前门有一处补漆，其余原版，内饰无烟车。适合预算 10 万以内的首购家庭。',
++     'brand', '大众', 'model', '高尔夫 2021款 280TSI DSG 舒适型', 'category', '轿车',
++     'condition', '二手 · 车况良好', 'location', '北京 · 海淀', 'delivery_mode', '到店自提',
++     'stock_quantity', 1,
++     'attachments', jsonb_build_array(jsonb_build_object(
++       'kind', 'image', 'file_name', 'car-03.svg', 'media_type', 'image/svg+xml',
++       'attachment_ref', 'media://hosted/00000000-0000-7000-8000-000000001113',
++       'metadata', jsonb_build_object('public_url', '/api/store-media/00000000-0000-7000-8000-000000001113')))),
++   jsonb_build_object('pricing_mode', 'fixed', 'amount_minor', '8980000', 'currency', 'CNY', 'currency_scale', 2),
++   'active', clock_timestamp()),
++  ('00000000-0000-7000-8000-000000001124', :'tenant_id'::uuid, '00000000-0000-7000-8000-000000001101',
++   '00000000-0000-7000-8000-000000001105', 'demo-car-toyota-corolla',
++   '丰田 卡罗拉 双擎 2022款 1.8L E-CVT 精英版',
++   jsonb_build_object(
++     'description', '2022 年 1 月上牌，行驶 2.9 万公里，油电混动无需充电，综合油耗约 4.2L。原厂质保期内，保险到明年。家用买菜通勤首选，保值率高，落地即省心。',
++     'brand', '丰田', 'model', '卡罗拉 双擎 2022款 1.8L E-CVT 精英版', 'category', '轿车',
++     'condition', '二手 · 车况优秀', 'location', '北京 · 丰台', 'delivery_mode', '到店自提 / 同城送车',
++     'stock_quantity', 1,
++     'attachments', jsonb_build_array(jsonb_build_object(
++       'kind', 'image', 'file_name', 'car-04.svg', 'media_type', 'image/svg+xml',
++       'attachment_ref', 'media://hosted/00000000-0000-7000-8000-000000001114',
++       'metadata', jsonb_build_object('public_url', '/api/store-media/00000000-0000-7000-8000-000000001114')))),
++   jsonb_build_object('pricing_mode', 'fixed', 'amount_minor', '9980000', 'currency', 'CNY', 'currency_scale', 2),
++   'active', clock_timestamp()),
++  ('00000000-0000-7000-8000-000000001125', :'tenant_id'::uuid, '00000000-0000-7000-8000-000000001101',
++   '00000000-0000-7000-8000-000000001105', 'demo-car-lixiang-l7',
++   '理想 L7 2023款 Pro',
++   jsonb_build_object(
++     'description', '2023 年 10 月上牌，行驶 1.2 万公里，准新车。增程式六座大五座布局，家庭出行空间充裕，带魔毯空气悬架与后排娱乐屏。首任车主权益可随车转移。',
++     'brand', '理想', 'model', 'L7 2023款 Pro', 'category', 'SUV',
++     'condition', '二手 · 准新车', 'location', '北京 · 顺义', 'delivery_mode', '到店自提 / 异地托运',
++     'stock_quantity', 1,
++     'attachments', jsonb_build_array(jsonb_build_object(
++       'kind', 'image', 'file_name', 'car-05.svg', 'media_type', 'image/svg+xml',
++       'attachment_ref', 'media://hosted/00000000-0000-7000-8000-000000001115',
++       'metadata', jsonb_build_object('public_url', '/api/store-media/00000000-0000-7000-8000-000000001115')))),
++   jsonb_build_object('pricing_mode', 'fixed', 'amount_minor', '25980000', 'currency', 'CNY', 'currency_scale', 2),
++   'active', clock_timestamp()),
++  ('00000000-0000-7000-8000-000000001126', :'tenant_id'::uuid, '00000000-0000-7000-8000-000000001101',
++   '00000000-0000-7000-8000-000000001105', 'demo-car-honda-crv',
++   '本田 CR-V 2020款 240TURBO CVT 两驱舒适版',
++   jsonb_build_object(
++     'description', '2020 年 6 月上牌，行驶 6.5 万公里。1.5T 城市 SUV 标杆，空间大、油耗低、维修保养便宜。定期 4S 保养，刚换四条新胎。预算 15 万以内想要 SUV 的稳妥之选。',
++     'brand', '本田', 'model', 'CR-V 2020款 240TURBO CVT 两驱舒适版', 'category', 'SUV',
++     'condition', '二手 · 车况良好', 'location', '北京 · 大兴', 'delivery_mode', '到店自提 / 同城送车',
++     'stock_quantity', 1,
++     'attachments', jsonb_build_array(jsonb_build_object(
++       'kind', 'image', 'file_name', 'car-06.svg', 'media_type', 'image/svg+xml',
++       'attachment_ref', 'media://hosted/00000000-0000-7000-8000-000000001116',
++       'metadata', jsonb_build_object('public_url', '/api/store-media/00000000-0000-7000-8000-000000001116')))),
++   jsonb_build_object('pricing_mode', 'fixed', 'amount_minor', '13280000', 'currency', 'CNY', 'currency_scale', 2),
++   'active', clock_timestamp())
++ON CONFLICT (id) DO NOTHING;
++
++COMMIT;
++
++-- Human-readable summary for the wrapper output.
++SELECT store.slug        AS demo_store_slug,
++       alias.path        AS demo_store_path,
++       count(offer.id)   AS active_offers
++  FROM stores store
++  JOIN store_path_aliases alias
++    ON alias.tenant_id = store.tenant_id AND alias.store_id = store.id AND alias.is_canonical
++  LEFT JOIN marketplace_offers offer
++    ON offer.tenant_id = store.tenant_id AND offer.store_id = store.id AND offer.status = 'active'
++ WHERE store.id = '00000000-0000-7000-8000-000000001104'
++ GROUP BY store.slug, alias.path;
+diff --git a/tools/demo/media/car-01.svg b/tools/demo/media/car-01.svg
+new file mode 100644
+index 0000000..963353a
+--- /dev/null
++++ b/tools/demo/media/car-01.svg
+@@ -0,0 +1,17 @@
++<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 750" role="img" aria-label="比亚迪 宋PLUS DM-i">
++  <rect width="1200" height="750" fill="#eef2ff"/>
++  <circle cx="1030" cy="150" r="210" fill="#818cf8" opacity="0.35"/>
++  <rect x="0" y="560" width="1200" height="190" fill="#818cf8" opacity="0.25"/>
++  <g>
++    <path d="M210 520 q10 -90 90 -110 l90 -22 q60 -78 170 -78 h160 q110 0 190 74 l120 26 q80 18 88 110 z" fill="#3b5bd6"/>
++    <path d="M418 396 q52 -62 142 -62 h150 q86 0 150 58 l-190 6 z" fill="#dbeafe" opacity="0.9"/>
++    <rect x="196" y="512" width="808" height="26" rx="13" fill="#1f2937" opacity="0.25"/>
++    <circle cx="392" cy="540" r="58" fill="#111827"/>
++    <circle cx="392" cy="540" r="26" fill="#e5e7eb"/>
++    <circle cx="812" cy="540" r="58" fill="#111827"/>
++    <circle cx="812" cy="540" r="26" fill="#e5e7eb"/>
++  </g>
++  <text x="80" y="120" font-family="'PingFang SC','Noto Sans SC',sans-serif" font-size="64" font-weight="700" fill="#111827">比亚迪 宋PLUS DM-i</text>
++  <text x="80" y="182" font-family="'PingFang SC','Noto Sans SC',sans-serif" font-size="38" fill="#374151">2023款 110KM 旗舰型 · 插混 SUV</text>
++  <text x="80" y="690" font-family="'PingFang SC','Noto Sans SC',sans-serif" font-size="30" fill="#4b5563">演示图片 · 星辰二手车行</text>
++</svg>
+diff --git a/tools/demo/media/car-02.svg b/tools/demo/media/car-02.svg
+new file mode 100644
+index 0000000..cbbe1cd
+--- /dev/null
++++ b/tools/demo/media/car-02.svg
+@@ -0,0 +1,17 @@
++<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 750" role="img" aria-label="特斯拉 Model 3">
++  <rect width="1200" height="750" fill="#ecfeff"/>
++  <circle cx="1030" cy="150" r="210" fill="#5eead4" opacity="0.35"/>
++  <rect x="0" y="560" width="1200" height="190" fill="#5eead4" opacity="0.25"/>
++  <g>
++    <path d="M210 520 q10 -90 90 -110 l90 -22 q60 -78 170 -78 h160 q110 0 190 74 l120 26 q80 18 88 110 z" fill="#0f766e"/>
++    <path d="M418 396 q52 -62 142 -62 h150 q86 0 150 58 l-190 6 z" fill="#dbeafe" opacity="0.9"/>
++    <rect x="196" y="512" width="808" height="26" rx="13" fill="#1f2937" opacity="0.25"/>
++    <circle cx="392" cy="540" r="58" fill="#111827"/>
++    <circle cx="392" cy="540" r="26" fill="#e5e7eb"/>
++    <circle cx="812" cy="540" r="58" fill="#111827"/>
++    <circle cx="812" cy="540" r="26" fill="#e5e7eb"/>
++  </g>
++  <text x="80" y="120" font-family="'PingFang SC','Noto Sans SC',sans-serif" font-size="64" font-weight="700" fill="#111827">特斯拉 Model 3</text>
++  <text x="80" y="182" font-family="'PingFang SC','Noto Sans SC',sans-serif" font-size="38" fill="#374151">2022款 后轮驱动版 · 纯电轿车</text>
++  <text x="80" y="690" font-family="'PingFang SC','Noto Sans SC',sans-serif" font-size="30" fill="#4b5563">演示图片 · 星辰二手车行</text>
++</svg>
+diff --git a/tools/demo/media/car-03.svg b/tools/demo/media/car-03.svg
+new file mode 100644
+index 0000000..668da70
+--- /dev/null
++++ b/tools/demo/media/car-03.svg
+@@ -0,0 +1,17 @@
++<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 750" role="img" aria-label="大众 高尔夫">
++  <rect width="1200" height="750" fill="#fefce8"/>
++  <circle cx="1030" cy="150" r="210" fill="#fcd34d" opacity="0.35"/>
++  <rect x="0" y="560" width="1200" height="190" fill="#fcd34d" opacity="0.25"/>
++  <g>
++    <path d="M210 520 q10 -90 90 -110 l90 -22 q60 -78 170 -78 h160 q110 0 190 74 l120 26 q80 18 88 110 z" fill="#b45309"/>
++    <path d="M418 396 q52 -62 142 -62 h150 q86 0 150 58 l-190 6 z" fill="#dbeafe" opacity="0.9"/>
++    <rect x="196" y="512" width="808" height="26" rx="13" fill="#1f2937" opacity="0.25"/>
++    <circle cx="392" cy="540" r="58" fill="#111827"/>
++    <circle cx="392" cy="540" r="26" fill="#e5e7eb"/>
++    <circle cx="812" cy="540" r="58" fill="#111827"/>
++    <circle cx="812" cy="540" r="26" fill="#e5e7eb"/>
++  </g>
++  <text x="80" y="120" font-family="'PingFang SC','Noto Sans SC',sans-serif" font-size="64" font-weight="700" fill="#111827">大众 高尔夫</text>
++  <text x="80" y="182" font-family="'PingFang SC','Noto Sans SC',sans-serif" font-size="38" fill="#374151">2021款 280TSI DSG 舒适型 · 两厢轿车</text>
++  <text x="80" y="690" font-family="'PingFang SC','Noto Sans SC',sans-serif" font-size="30" fill="#4b5563">演示图片 · 星辰二手车行</text>
++</svg>
+diff --git a/tools/demo/media/car-04.svg b/tools/demo/media/car-04.svg
+new file mode 100644
+index 0000000..fc331fe
+--- /dev/null
++++ b/tools/demo/media/car-04.svg
+@@ -0,0 +1,17 @@
++<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 750" role="img" aria-label="丰田 卡罗拉 双擎">
++  <rect width="1200" height="750" fill="#f0fdf4"/>
++  <circle cx="1030" cy="150" r="210" fill="#86efac" opacity="0.35"/>
++  <rect x="0" y="560" width="1200" height="190" fill="#86efac" opacity="0.25"/>
++  <g>
++    <path d="M210 520 q10 -90 90 -110 l90 -22 q60 -78 170 -78 h160 q110 0 190 74 l120 26 q80 18 88 110 z" fill="#15803d"/>
++    <path d="M418 396 q52 -62 142 -62 h150 q86 0 150 58 l-190 6 z" fill="#dbeafe" opacity="0.9"/>
++    <rect x="196" y="512" width="808" height="26" rx="13" fill="#1f2937" opacity="0.25"/>
++    <circle cx="392" cy="540" r="58" fill="#111827"/>
++    <circle cx="392" cy="540" r="26" fill="#e5e7eb"/>
++    <circle cx="812" cy="540" r="58" fill="#111827"/>
++    <circle cx="812" cy="540" r="26" fill="#e5e7eb"/>
++  </g>
++  <text x="80" y="120" font-family="'PingFang SC','Noto Sans SC',sans-serif" font-size="64" font-weight="700" fill="#111827">丰田 卡罗拉 双擎</text>
++  <text x="80" y="182" font-family="'PingFang SC','Noto Sans SC',sans-serif" font-size="38" fill="#374151">2022款 1.8L E-CVT 精英版 · 混动轿车</text>
++  <text x="80" y="690" font-family="'PingFang SC','Noto Sans SC',sans-serif" font-size="30" fill="#4b5563">演示图片 · 星辰二手车行</text>
++</svg>
+diff --git a/tools/demo/media/car-05.svg b/tools/demo/media/car-05.svg
+new file mode 100644
+index 0000000..346362b
+--- /dev/null
++++ b/tools/demo/media/car-05.svg
+@@ -0,0 +1,17 @@
++<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 750" role="img" aria-label="理想 L7">
++  <rect width="1200" height="750" fill="#faf5ff"/>
++  <circle cx="1030" cy="150" r="210" fill="#c4b5fd" opacity="0.35"/>
++  <rect x="0" y="560" width="1200" height="190" fill="#c4b5fd" opacity="0.25"/>
++  <g>
++    <path d="M210 520 q10 -90 90 -110 l90 -22 q60 -78 170 -78 h160 q110 0 190 74 l120 26 q80 18 88 110 z" fill="#6d28d9"/>
++    <path d="M418 396 q52 -62 142 -62 h150 q86 0 150 58 l-190 6 z" fill="#dbeafe" opacity="0.9"/>
++    <rect x="196" y="512" width="808" height="26" rx="13" fill="#1f2937" opacity="0.25"/>
++    <circle cx="392" cy="540" r="58" fill="#111827"/>
++    <circle cx="392" cy="540" r="26" fill="#e5e7eb"/>
++    <circle cx="812" cy="540" r="58" fill="#111827"/>
++    <circle cx="812" cy="540" r="26" fill="#e5e7eb"/>
++  </g>
++  <text x="80" y="120" font-family="'PingFang SC','Noto Sans SC',sans-serif" font-size="64" font-weight="700" fill="#111827">理想 L7</text>
++  <text x="80" y="182" font-family="'PingFang SC','Noto Sans SC',sans-serif" font-size="38" fill="#374151">2023款 Pro · 增程式家庭 SUV</text>
++  <text x="80" y="690" font-family="'PingFang SC','Noto Sans SC',sans-serif" font-size="30" fill="#4b5563">演示图片 · 星辰二手车行</text>
++</svg>
+diff --git a/tools/demo/media/car-06.svg b/tools/demo/media/car-06.svg
+new file mode 100644
+index 0000000..c52a642
+--- /dev/null
++++ b/tools/demo/media/car-06.svg
+@@ -0,0 +1,17 @@
++<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 750" role="img" aria-label="本田 CR-V">
++  <rect width="1200" height="750" fill="#fff1f2"/>
++  <circle cx="1030" cy="150" r="210" fill="#fda4af" opacity="0.35"/>
++  <rect x="0" y="560" width="1200" height="190" fill="#fda4af" opacity="0.25"/>
++  <g>
++    <path d="M210 520 q10 -90 90 -110 l90 -22 q60 -78 170 -78 h160 q110 0 190 74 l120 26 q80 18 88 110 z" fill="#be123c"/>
++    <path d="M418 396 q52 -62 142 -62 h150 q86 0 150 58 l-190 6 z" fill="#dbeafe" opacity="0.9"/>
++    <rect x="196" y="512" width="808" height="26" rx="13" fill="#1f2937" opacity="0.25"/>
++    <circle cx="392" cy="540" r="58" fill="#111827"/>
++    <circle cx="392" cy="540" r="26" fill="#e5e7eb"/>
++    <circle cx="812" cy="540" r="58" fill="#111827"/>
++    <circle cx="812" cy="540" r="26" fill="#e5e7eb"/>
++  </g>
++  <text x="80" y="120" font-family="'PingFang SC','Noto Sans SC',sans-serif" font-size="64" font-weight="700" fill="#111827">本田 CR-V</text>
++  <text x="80" y="182" font-family="'PingFang SC','Noto Sans SC',sans-serif" font-size="38" fill="#374151">2020款 240TURBO CVT 两驱舒适版 · SUV</text>
++  <text x="80" y="690" font-family="'PingFang SC','Noto Sans SC',sans-serif" font-size="30" fill="#4b5563">演示图片 · 星辰二手车行</text>
++</svg>
+-- 
+2.43.0
+

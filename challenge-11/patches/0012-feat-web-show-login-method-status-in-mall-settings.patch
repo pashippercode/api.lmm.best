@@ -1,0 +1,413 @@
+From b6e98df4ef1ae897a6d89e74ac92ca9e33c5b890 Mon Sep 17 00:00:00 2001
+From: Cursor Agent <cursoragent@cursor.com>
+Date: Mon, 24 Aug 2026 13:14:18 +0000
+Subject: [PATCH 12/23] feat(web): show login method status in mall settings
+
+Mall operators previously had no way to see whether WeChat or SMS phone
+login was live. The new panel in mall settings reads the public
+capability endpoint, shows each method's state, and lists the exact
+environment variables that complete WeChat OAuth and the SMS gateway,
+with a re-check button.
+---
+ web/src/components/LoginMethodsPanel.test.tsx |  82 +++++++
+ web/src/components/LoginMethodsPanel.tsx      | 220 ++++++++++++++++++
+ web/src/components/PlatformDashboard.tsx      |   4 +
+ web/src/styles.css                            |  17 +-
+ 4 files changed, 321 insertions(+), 2 deletions(-)
+ create mode 100644 web/src/components/LoginMethodsPanel.test.tsx
+ create mode 100644 web/src/components/LoginMethodsPanel.tsx
+
+diff --git a/web/src/components/LoginMethodsPanel.test.tsx b/web/src/components/LoginMethodsPanel.test.tsx
+new file mode 100644
+index 0000000..5ca1b9b
+--- /dev/null
++++ b/web/src/components/LoginMethodsPanel.test.tsx
+@@ -0,0 +1,82 @@
++import { render, screen } from "@testing-library/react";
++import userEvent from "@testing-library/user-event";
++import { afterEach, describe, expect, it, vi } from "vitest";
++
++import { LoginMethodsPanel } from "./LoginMethodsPanel";
++
++function stubProviders(body: Record<string, unknown>) {
++  const fetchMock = vi.fn(
++    async () =>
++      new Response(JSON.stringify(body), {
++        status: 200,
++        headers: { "content-type": "application/json" },
++      }),
++  );
++  vi.stubGlobal("fetch", fetchMock);
++  return fetchMock;
++}
++
++afterEach(() => {
++  vi.unstubAllGlobals();
++  vi.clearAllMocks();
++});
++
++describe("LoginMethodsPanel", () => {
++  it("lists the exact environment variables when WeChat and SMS are not configured", async () => {
++    stubProviders({ passkey: true, social: [], primary: [] });
++    render(<LoginMethodsPanel />);
++
++    const rows = await screen.findByLabelText("登录方式状态");
++    expect(rows).toBeInTheDocument();
++    expect(screen.getAllByText("未启用")).toHaveLength(3);
++    expect(
++      screen.getByText("MATCHPLANE_WECHAT_OAUTH_CLIENT_ID"),
++    ).toBeInTheDocument();
++    expect(
++      screen.getByText("MATCHPLANE_WECHAT_OAUTH_CLIENT_SECRET"),
++    ).toBeInTheDocument();
++    expect(
++      screen.getByText("MATCHPLANE_SMS_PROVIDER_URL"),
++    ).toBeInTheDocument();
++    expect(
++      screen.getByText("MATCHPLANE_SMS_PROVIDER_TOKEN"),
++    ).toBeInTheDocument();
++  });
++
++  it("reports WeChat and phone codes as live without configuration hints", async () => {
++    stubProviders({
++      emailOtp: true,
++      phoneOtp: true,
++      magicLink: true,
++      passkey: true,
++      social: ["wechat", "google"],
++      primary: [],
++    });
++    render(<LoginMethodsPanel />);
++
++    await screen.findByLabelText("登录方式状态");
++    expect(screen.queryByText("未启用")).not.toBeInTheDocument();
++    expect(
++      screen.queryByText("MATCHPLANE_WECHAT_OAUTH_CLIENT_ID"),
++    ).not.toBeInTheDocument();
++    expect(
++      screen.queryByText("MATCHPLANE_SMS_PROVIDER_URL"),
++    ).not.toBeInTheDocument();
++    expect(screen.getByText("google")).toBeInTheDocument();
++  });
++
++  it("re-checks the server when the operator asks for a fresh status", async () => {
++    const fetchMock = stubProviders({ passkey: true, social: [], primary: [] });
++    const user = userEvent.setup();
++    render(<LoginMethodsPanel />);
++
++    await screen.findByLabelText("登录方式状态");
++    expect(fetchMock).toHaveBeenCalledTimes(1);
++    await user.click(screen.getByRole("button", { name: "重新检测" }));
++    expect(fetchMock).toHaveBeenCalledTimes(2);
++    expect(fetchMock).toHaveBeenLastCalledWith(
++      "/api/auth/providers",
++      expect.objectContaining({ cache: "no-store" }),
++    );
++  });
++});
+diff --git a/web/src/components/LoginMethodsPanel.tsx b/web/src/components/LoginMethodsPanel.tsx
+new file mode 100644
+index 0000000..1b0d64c
+--- /dev/null
++++ b/web/src/components/LoginMethodsPanel.tsx
+@@ -0,0 +1,220 @@
++"use client";
++
++import { useCallback, useEffect, useState } from "react";
++import { RefreshCw } from "lucide-react";
++
++import { SectionHeading } from "./Primitives";
++
++interface LoginMethodStatus {
++  emailOtp: boolean;
++  phoneOtp: boolean;
++  magicLink: boolean;
++  passkey: boolean;
++  social: string[];
++  primary: string[];
++}
++
++/**
++ * Read-only status board for the mall's sign-in methods. WeChat and SMS
++ * credentials deliberately live in deployment environment variables — never in
++ * the database or the browser — so this panel reports what the running server
++ * has detected and tells the operator exactly which variables complete each
++ * method.
++ */
++export function LoginMethodsPanel() {
++  const [status, setStatus] = useState<LoginMethodStatus | null>(null);
++  const [checking, setChecking] = useState(true);
++  const [error, setError] = useState<string | null>(null);
++
++  const refresh = useCallback(async () => {
++    setChecking(true);
++    setError(null);
++    try {
++      const response = await fetch("/api/auth/providers", {
++        headers: { accept: "application/json" },
++        cache: "no-store",
++      });
++      if (!response.ok) throw new Error();
++      const body = (await response.json()) as Partial<LoginMethodStatus>;
++      setStatus({
++        emailOtp: body.emailOtp === true,
++        phoneOtp: body.phoneOtp === true,
++        magicLink: body.magicLink === true,
++        passkey: body.passkey !== false,
++        social: Array.isArray(body.social) ? body.social : [],
++        primary: Array.isArray(body.primary) ? body.primary : [],
++      });
++    } catch {
++      setStatus(null);
++      setError("登录方式检测失败，请稍后重试。");
++    } finally {
++      setChecking(false);
++    }
++  }, []);
++
++  useEffect(() => {
++    void refresh();
++  }, [refresh]);
++
++  const wechatEnabled = status?.social.includes("wechat") === true;
++  const phoneEnabled = status?.phoneOtp === true;
++
++  return (
++    <section
++      className="surface login-methods-panel"
++      aria-labelledby="login-methods-title"
++    >
++      <SectionHeading
++        eyebrow="用户登录"
++        title="登录方式"
++        titleId="login-methods-title"
++      />
++      <p className="subplatform-intro">
++        密码和 Passkey 始终可用。微信、手机验证码等方式配置完成后会自动出现在登录页；
++        这里显示服务器当前检测到的状态。
++      </p>
++      {status ? (
++        <div className="provider-list" aria-label="登录方式状态">
++          <MethodRow
++            name="密码"
++            detail="邮箱注册账号的默认方式"
++            enabled
++          />
++          <MethodRow
++            name="Passkey"
++            detail="指纹、面容或安全密钥"
++            enabled={status.passkey}
++          />
++          <MethodRow
++            name="微信登录"
++            detail={
++              wechatEnabled
++                ? "已出现在登录页“其他方式”中"
++                : "在服务器环境变量中填写微信开放平台凭据"
++            }
++            enabled={wechatEnabled}
++          />
++          {!wechatEnabled ? (
++            <EnvChecklist
++              label="微信登录所需环境变量"
++              items={[
++                { name: "MATCHPLANE_WECHAT_OAUTH_CLIENT_ID", note: "微信开放平台 AppID" },
++                { name: "MATCHPLANE_WECHAT_OAUTH_CLIENT_SECRET", note: "微信开放平台 AppSecret" },
++                {
++                  name: "MATCHPLANE_WECHAT_OAUTH_AUTHORIZATION_URL / _TOKEN_URL / _USERINFO_URL",
++                  note: "三个网关地址需同时填写；支持 OIDC 的网关可只填 MATCHPLANE_WECHAT_OAUTH_DISCOVERY_URL",
++                },
++                {
++                  name: "MATCHPLANE_WECHAT_OAUTH_SCOPES",
++                  note: "可选，逗号分隔，默认 openid,profile,email",
++                },
++              ]}
++            />
++          ) : null}
++          <MethodRow
++            name="手机号验证码"
++            detail={
++              phoneEnabled
++                ? "登录页支持输入手机号获取短信验证码"
++                : "接入一个 HTTPS 短信网关即可开启"
++            }
++            enabled={phoneEnabled}
++          />
++          {!phoneEnabled ? (
++            <EnvChecklist
++              label="手机号验证码所需环境变量"
++              items={[
++                {
++                  name: "MATCHPLANE_SMS_PROVIDER_URL",
++                  note: "HTTPS 短信网关地址；服务器会 POST { phoneNumber, code, purpose }",
++                },
++                {
++                  name: "MATCHPLANE_SMS_PROVIDER_TOKEN",
++                  note: "可选，作为 Bearer token 随请求发送",
++                },
++              ]}
++            />
++          ) : null}
++          <MethodRow
++            name="邮箱验证码 / 免密链接"
++            detail={
++              status.emailOtp
++                ? "跟随下方“账号邮件”配置，已可用"
++                : "在下方“账号邮件”里配置 SMTP 后自动开启"
++            }
++            enabled={status.emailOtp}
++          />
++          {status.social.filter((provider) => provider !== "wechat").length ? (
++            <MethodRow
++              name="其他第三方登录"
++              detail={status.social
++                .filter((provider) => provider !== "wechat")
++                .join("、")}
++              enabled
++            />
++          ) : null}
++        </div>
++      ) : (
++        <p className="subplatform-intro" role={error ? "alert" : "status"}>
++          {error ?? "正在检测登录方式…"}
++        </p>
++      )}
++      <div className="login-methods-footer">
++        <p>
++          修改环境变量后需要重启 Web 服务；登录页最多在 60 秒内更新。QQ、支付宝、Google
++          使用相同的 <code>MATCHPLANE_&lt;提供方&gt;_OAUTH_*</code> 变量；
++          国家网络身份认证在下方单独配置。
++        </p>
++        <button
++          type="button"
++          disabled={checking}
++          onClick={() => void refresh()}
++        >
++          <RefreshCw size={15} aria-hidden="true" />
++          {checking ? "检测中…" : "重新检测"}
++        </button>
++      </div>
++    </section>
++  );
++}
++
++function MethodRow({
++  name,
++  detail,
++  enabled,
++}: {
++  name: string;
++  detail: string;
++  enabled: boolean;
++}) {
++  return (
++    <div className="provider-row login-method-row">
++      <span>
++        <strong>{name}</strong>
++        <small>{detail}</small>
++      </span>
++      <b className={enabled ? "status-chip is-on" : "status-chip"}>
++        {enabled ? "已启用" : "未启用"}
++      </b>
++    </div>
++  );
++}
++
++function EnvChecklist({
++  label,
++  items,
++}: {
++  label: string;
++  items: { name: string; note: string }[];
++}) {
++  return (
++    <div className="login-method-env" aria-label={label}>
++      {items.map((item) => (
++        <p key={item.name}>
++          <code>{item.name}</code>
++          <span>{item.note}</span>
++        </p>
++      ))}
++    </div>
++  );
++}
+diff --git a/web/src/components/PlatformDashboard.tsx b/web/src/components/PlatformDashboard.tsx
+index b2ccb36..b06ce04 100644
+--- a/web/src/components/PlatformDashboard.tsx
++++ b/web/src/components/PlatformDashboard.tsx
+@@ -50,12 +50,14 @@ import {
+   type SubplatformArchiveUpload,
+   type SubplatformOrganizationRecord,
+ } from "../api";
++import { LoginMethodsPanel } from "./LoginMethodsPanel";
+ import { ModeDialog } from "./Overlays";
+ import { PlatformAccessPanel } from "./PlatformAccessPanel";
+ import { PlatformSiteSettingsPanel } from "./PlatformSiteSettingsPanel";
+ import { RootEmailConfigPanel } from "./RootEmailConfigPanel";
+ import { PlatformAiConfigPanel } from "./PlatformAiConfigPanel";
+ import { NationalIdentityConfigPanel } from "./NationalIdentityConfigPanel";
++import { PhoneLoginConfigPanel } from "./PhoneLoginConfigPanel";
+ import { MallCatalogModeration } from "./MallCatalogModeration";
+ import { MallBrandPanel } from "./MallBrandPanel";
+ import { StoreCommercialTermsPanel } from "./StoreCommercialTermsPanel";
+@@ -888,6 +890,7 @@ export function PlatformDashboard({
+                 onBrandUpdated={onBrandUpdated}
+                 onNotice={onNotice}
+               />
++              <LoginMethodsPanel />
+               <section
+                 className="platform-component-panel"
+                 aria-label="商城账号邮件服务"
+@@ -898,6 +901,7 @@ export function PlatformDashboard({
+                 rootRole={rootRole}
+                 onNotice={onNotice}
+               />
++              <PhoneLoginConfigPanel rootRole={rootRole} onNotice={onNotice} />
+               <PlatformSiteSettingsPanel
+                 organizationId={setup?.root.organization?.id}
+                 platformPath="/"
+diff --git a/web/src/styles.css b/web/src/styles.css
+index 3b8d4bb..30d30ba 100644
+--- a/web/src/styles.css
++++ b/web/src/styles.css
+@@ -388,6 +388,19 @@ main { padding: 1.15rem 1.25rem 7rem; }
+ .national-identity-endpoints label > span { color: var(--ink-soft); font-size: 0.68rem; font-weight: 650; }
+ .national-identity-actions { margin-top: 0.2rem; }
+ .national-identity-restart { margin: 0.8rem 0 0; color: var(--ink-soft); font-size: 0.7rem; line-height: 1.5; }
++.login-methods-panel { margin-top: 1rem; padding: clamp(1rem, 2vw, 1.35rem); }
++.login-methods-panel .provider-list { margin-top: 0.75rem; }
++.login-method-row > b.status-chip { background: rgba(217, 119, 87, 0.14); color: #91432a; }
++.login-method-row > b.status-chip.is-on { background: rgba(120, 140, 93, 0.14); color: #4d622f; }
++.login-method-env { padding: 0.65rem 0.75rem; display: grid; gap: 0.4rem; border: 1px dashed var(--line); border-radius: 0.9rem; background: var(--paper); }
++.login-method-env p { margin: 0; display: grid; gap: 0.14rem; font-size: 0.62rem; }
++.login-method-env code { color: var(--ink); font-size: 0.62rem; word-break: break-all; }
++.login-method-env p > span { color: var(--muted); }
++.login-methods-footer { margin-top: 0.85rem; padding-top: 0.55rem; display: flex; align-items: flex-start; justify-content: space-between; gap: 0.8rem; border-top: 1px solid var(--line); }
++.login-methods-footer p { margin: 0; color: var(--muted); font-size: 0.62rem; line-height: 1.55; }
++.login-methods-footer code { font-size: 0.6rem; }
++.login-methods-footer button { min-height: 2.35rem; padding: 0 0.8rem; display: inline-flex; flex-shrink: 0; align-items: center; gap: 0.38rem; border: 1px solid var(--line-strong); border-radius: 0.7rem; background: var(--paper); color: var(--ink); cursor: pointer; font: inherit; font-size: 0.68rem; font-weight: 650; }
++.login-methods-footer button:disabled { cursor: not-allowed; opacity: 0.55; }
+ .platform-access-select { min-width: min(100%, 18rem); display: grid; gap: 0.3rem; }
+ .platform-access-select span, .platform-access-invite label > span { color: var(--ink-soft); font-size: 0.66rem; font-weight: 650; }
+ .platform-access-select select, .platform-access-invite input, .platform-access-invite select, .platform-member-row select { width: 100%; padding: 0.62rem 0.7rem; border: 1px solid var(--line); border-radius: 0.72rem; outline: 0; background: var(--paper); color: var(--ink); font: inherit; font-size: 0.72rem; }
+@@ -1975,7 +1988,7 @@ main > div > .match-chat.is-root.is-catalog-header { margin-top: 0.75rem; paddin
+ .store-contact-consent-heading span, .store-contact-consent-explain { margin: 0; color: var(--muted); font-size: 0.67rem; line-height: 1.52; }
+ .store-contact-consent-loading, .store-contact-consent-error { min-height: 2.75rem; display: flex; align-items: center; gap: 0.45rem; color: var(--muted); font-size: 0.68rem; }
+ .store-contact-consent-error span { flex: 1; }
+-.store-contact-consent-error button, .store-contact-consent-empty a { min-height: 2.5rem; padding: 0 0.72rem; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--line-strong); border-radius: 0.55rem; background: var(--paper); color: var(--ink-soft); font: inherit; font-size: 0.66rem; font-weight: 680; text-decoration: none; cursor: pointer; }
++.store-contact-consent-error button, .store-contact-consent-error a, .store-contact-consent-empty a, .store-contact-consent-empty-actions button { min-height: 2.5rem; padding: 0 0.72rem; display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--line-strong); border-radius: 0.55rem; background: var(--paper); color: var(--ink-soft); font: inherit; font-size: 0.66rem; font-weight: 680; text-decoration: none; cursor: pointer; }
+ .store-contact-consent-channels { margin: 0; padding: 0; list-style: none; display: grid; gap: 0.4rem; }
+ .store-contact-consent-channels li { min-height: 3.2rem; padding: 0.48rem 0.6rem; display: flex; align-items: center; gap: 0.55rem; border: 1px solid var(--line); border-radius: 0.58rem; background: var(--paper); }
+ .store-contact-consent-channels li > svg { flex: 0 0 auto; color: var(--muted); }
+@@ -1986,7 +1999,7 @@ main > div > .match-chat.is-root.is-catalog-header { margin-top: 0.75rem; paddin
+ .store-contact-consent-empty { display: grid; gap: 0.3rem; }
+ .store-contact-consent-empty strong { color: var(--ink); font-size: 0.72rem; }
+ .store-contact-consent-empty span { color: var(--muted); font-size: 0.66rem; line-height: 1.5; }
+-.store-contact-consent-empty a { justify-self: start; margin-top: 0.25rem; }
++.store-contact-consent-empty-actions { display: flex; flex-wrap: wrap; gap: 0.45rem; margin-top: 0.25rem; }
+ .store-contact-consent-result { margin-top: 0.55rem; padding: 0.7rem 0.76rem; display: flex; align-items: flex-start; gap: 0.55rem; border: 1px solid var(--line); border-radius: 0.72rem; background: var(--paper); }
+ .store-contact-consent-result > svg { flex: 0 0 auto; color: var(--cactus-strong); }
+ .store-contact-consent-result.is-declined > svg { color: var(--muted); }
+-- 
+2.43.0
+

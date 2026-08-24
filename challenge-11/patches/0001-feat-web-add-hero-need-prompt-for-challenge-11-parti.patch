@@ -1,0 +1,354 @@
+From 155e1a943edf6a2303ad2a4a97ddaa1f5a74a8fc Mon Sep 17 00:00:00 2001
+From: Cursor Agent <cursoragent@cursor.com>
+Date: Mon, 24 Aug 2026 12:59:40 +0000
+Subject: [PATCH 01/23] feat(web): add hero need prompt for challenge #11
+ participation
+
+Add a compact natural-language entry on the marketplace home that opens the
+shopping clerk with a prefilled draft. Document platform acceptance steps and
+demo checklist for bounty challenge #11.
+---
+ docs/challenge-11-participation.zh-CN.md    | 64 +++++++++++++++++++++
+ web/src/components/MarketplaceHome.test.tsx | 44 +++++++++++++-
+ web/src/components/MarketplaceHome.tsx      | 62 ++++++++++++++++++++
+ web/src/components/MatchChat.tsx            | 14 +++++
+ web/src/retail-ui.css                       | 24 ++++++++
+ 5 files changed, 206 insertions(+), 2 deletions(-)
+ create mode 100644 docs/challenge-11-participation.zh-CN.md
+
+diff --git a/docs/challenge-11-participation.zh-CN.md b/docs/challenge-11-participation.zh-CN.md
+new file mode 100644
+index 0000000..2930e63
+--- /dev/null
++++ b/docs/challenge-11-participation.zh-CN.md
+@@ -0,0 +1,64 @@
++# 挑战 #11 参与指南
++
++> 平台链接：https://api.lmm.best/challenges/11  
++> 仓库：https://github.com/LIghtJUNction/matchplane  
++> 发布者邮箱：lightjunction.me@gmail.com
++
++## 1. 在平台接受挑战
++
++1. 登录 https://api.lmm.best（需要 **L1 开发者权限** 才能接受挑战）。
++2. 打开 https://api.lmm.best/challenges/11 。
++3. 点击 **接受挑战**，填写你的 **GitHub 用户名**（不含 `@`）。
++4. 当前仅剩 **1 个名额**（5 人中已有 4 人接受）。
++
++接受后，务必邮件联系发布者说明你的方案方向与 GitHub 账号。
++
++## 2. 与发布者对接（必做）
++
++挑战规则要求：**务必联系发布者，交流设计细节，展示成果。**
++
++建议邮件主题：
++
++```text
++[MatchPlane 挑战 #11] 参与确认 — <你的 GitHub 用户名>
++```
++
++正文建议包含：
++
++- 你接受的挑战编号与 GitHub 用户名
++- 方案简述（产品优先、工具检索、联系方式交换、卖车店铺场景）
++- 预计演示方式（本地 / 测试环境 URL）
++- 方便沟通的时间
++
++## 3. 本地开发与验收
++
++```sh
++# 依赖：Bun、Rust、PostgreSQL（见 README.zh-CN.md）
++cd matchplane
++matchplane doctor --json
++matchplane initialize
++matchplane serve web
++matchplane serve gateway
++```
++
++关键验收路径（需亲自点击验证）：
++
++1. **浏览商品**：首页先看真实商品卡片，可点赞
++2. **自然语言选货**：首页输入需求（如「预算 15 万以内的 SUV」）→ 打开选货员 → 通过工具检索商品（非 RAG）
++3. **店铺页**：进入卖车店铺，浏览车辆详情
++4. **联系方式交换**：双方账号绑定已验证邮箱/手机 → 双方同意后交换（不能手填联系方式）
++5. **商城设置**：平台负责人配置 AI 网关、可选微信/手机登录
++
++## 4. 提交与评审
++
++- 在 `LIghtJUNction/matchplane` 提交 PR，聚焦挑战目标
++- 在平台提交 Issue / PR 链接作为交付证据
++- 发布者 **人工验收**，5 选 1 发 $500 余额，其余安慰奖
++- 评审强调：**去 AI 味**、简洁易用、真实可点、工具检索而非 RAG
++
++## 5. 本分支改动说明
++
++`cursor/challenge-11-participation-897f`：
++
++- 商城首页增加 **自然语言需求入口**（「帮我找」），商品仍居首屏，选货员为辅助
++- 输入内容预填到选货员对话框，降低发现成本，符合「直接用自然语言描述需求」
+diff --git a/web/src/components/MarketplaceHome.test.tsx b/web/src/components/MarketplaceHome.test.tsx
+index 75d8b1b..4f864b1 100644
+--- a/web/src/components/MarketplaceHome.test.tsx
++++ b/web/src/components/MarketplaceHome.test.tsx
+@@ -114,6 +114,44 @@ describe("MarketplaceHome actions", () => {
+     expect(onPublishProduct).toHaveBeenCalledTimes(1);
+   });
+ 
++  it("opens the shopping clerk with a hero need prompt", async () => {
++    const user = userEvent.setup();
++    render(
++      <MarketplaceHome
++        catalogResolved
++        listings={[listing]}
++        locale="zh"
++        theme="light"
++        onLocaleChange={vi.fn()}
++        onThemeChange={vi.fn()}
++        onLikeListing={vi.fn(async () => undefined)}
++        onNotice={vi.fn()}
++        onOpenListing={vi.fn()}
++        onPublishProduct={vi.fn()}
++        onRetryCatalog={vi.fn()}
++        onRecommendations={vi.fn()}
++        subplatform={
++          {
++            slug: "root",
++            path: "/",
++            label: "MatchPlane",
++            ui: {},
++          } as SubplatformConfig
++        }
++      />,
++    );
++
++    await user.type(
++      screen.getByRole("textbox", { name: "描述想买的东西和预算" }),
++      "预算 15 万以内的 SUV",
++    );
++    await user.click(screen.getByRole("button", { name: "帮我找" }));
++    expect(screen.getByRole("button", { name: "问选货员" })).toHaveAttribute(
++      "aria-expanded",
++      "true",
++    );
++  });
++
+   it("uses a keyboard-navigable toggle group for category filtering", async () => {
+     const user = userEvent.setup();
+     const homeListing: AssetListing = {
+@@ -200,13 +238,15 @@ describe("MarketplaceHome actions", () => {
+       />,
+     );
+ 
+-    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
++    expect(
++      screen.getByRole("textbox", { name: "描述想买的东西和预算" }),
++    ).toBeInTheDocument();
+     const toggle = screen.getByRole("button", { name: "问选货员" });
+     expect(toggle).toHaveAttribute("aria-expanded", "false");
+ 
+     await user.click(toggle);
+     expect(toggle).toHaveAttribute("aria-expanded", "true");
+-    expect(screen.getAllByRole("textbox")).toHaveLength(1);
++    expect(screen.getAllByRole("textbox").length).toBeGreaterThanOrEqual(2);
+     expect(container.querySelector(".root-marketplace-page")).toHaveClass(
+       "is-clerk-open",
+     );
+diff --git a/web/src/components/MarketplaceHome.tsx b/web/src/components/MarketplaceHome.tsx
+index daac2f5..72268e9 100644
+--- a/web/src/components/MarketplaceHome.tsx
++++ b/web/src/components/MarketplaceHome.tsx
+@@ -8,6 +8,7 @@ import {
+     AlertTitle,
+ } from "@appica/ui-react/alert";
+ import { Button } from "@appica/ui-react/button";
++import { Input } from "@appica/ui-react/input";
+ import { Skeleton } from "@appica/ui-react/skeleton";
+ import { Toggle } from "@appica/ui-react/toggle";
+ import { ToggleGroup } from "@appica/ui-react/toggle-group";
+@@ -92,6 +93,8 @@ function MarketplaceLoading({ locale }: { locale: InterfaceLocale }) {
+ 
+ interface MarketplaceSearchPanelProps {
+     locale: InterfaceLocale;
++    draftMessage?: string;
++    onDraftMessageApplied?: () => void;
+     onLikeListing: (listing: AssetListing) => Promise<void>;
+     onNotice: (message: string) => void;
+     onOpenListing: (listing: AssetListing) => void;
+@@ -101,6 +104,8 @@ interface MarketplaceSearchPanelProps {
+ 
+ function MarketplaceSearchPanel({
+     locale,
++    draftMessage,
++    onDraftMessageApplied,
+     onLikeListing,
+     onNotice,
+     onOpenListing,
+@@ -118,6 +123,8 @@ function MarketplaceSearchPanel({
+                     compact
+                     role="buyer"
+                     locale={locale}
++                    draftMessage={draftMessage}
++                    onDraftMessageApplied={onDraftMessageApplied}
+                     onLikeListing={onLikeListing}
+                     onNotice={onNotice}
+                     onOpenListing={onOpenListing}
+@@ -250,6 +257,51 @@ function MarketplaceProducts({
+     );
+ }
+ 
++function MarketplaceNeedPrompt({
++    locale,
++    onSubmit,
++}: {
++    locale: InterfaceLocale;
++    onSubmit: (text: string) => void;
++}) {
++    const [value, setValue] = useState("");
++    const english = locale === "en";
++
++    return (
++        <form
++            className="root-marketplace-need-prompt"
++            aria-label={english ? "Describe what you need" : "描述你的需求"}
++            onSubmit={(event) => {
++                event.preventDefault();
++                const text = value.trim();
++                if (!text) return;
++                onSubmit(text);
++                setValue("");
++            }}
++        >
++            <Input
++                className="root-marketplace-need-input"
++                value={value}
++                maxLength={240}
++                placeholder={
++                    english
++                        ? "For example: a family SUV under 150,000"
++                        : "例如：预算 15 万以内的家用 SUV"
++                }
++                aria-label={
++                    english
++                        ? "Describe what you want and your budget"
++                        : "描述想买的东西和预算"
++                }
++                onChange={(event) => setValue(event.target.value)}
++            />
++            <Button type="submit" disabled={!value.trim()}>
++                {english ? "Find matches" : "帮我找"}
++            </Button>
++        </form>
++    );
++}
++
+ export function MarketplaceHome({
+     catalogResolved,
+     catalogError = false,
+@@ -266,6 +318,7 @@ export function MarketplaceHome({
+     const allLabel = locale === "en" ? "All" : "全部";
+     const [category, setCategory] = useState(allLabel);
+     const [clerkOpen, setClerkOpen] = useState(false);
++    const [clerkDraft, setClerkDraft] = useState<string | undefined>();
+     const categories = useMemo(
+         () => [
+             allLabel,
+@@ -311,6 +364,13 @@ export function MarketplaceHome({
+                                     ? "Browse real listings. The shopping assistant can help narrow the choice when needed."
+                                     : "浏览真实在售商品；需要帮助时，选货员会帮你缩小范围。"}
+                             </span>
++                            <MarketplaceNeedPrompt
++                                locale={locale}
++                                onSubmit={(text) => {
++                                    setClerkDraft(text);
++                                    setClerkOpen(true);
++                                }}
++                            />
+                         </div>
+                         <div className="root-marketplace-catalog-actions">
+                             <Button
+@@ -385,6 +445,8 @@ export function MarketplaceHome({
+             >
+                 <MarketplaceSearchPanel
+                     locale={locale}
++                    draftMessage={clerkDraft}
++                    onDraftMessageApplied={() => setClerkDraft(undefined)}
+                     onLikeListing={onLikeListing}
+                     onNotice={onNotice}
+                     onOpenListing={onOpenListing}
+diff --git a/web/src/components/MatchChat.tsx b/web/src/components/MatchChat.tsx
+index c42cedb..54205c8 100644
+--- a/web/src/components/MatchChat.tsx
++++ b/web/src/components/MatchChat.tsx
+@@ -559,6 +559,9 @@ interface MatchChatProps {
+   }) => void;
+   /** Move a seller into the selected terminal platform before showing its supply form. */
+   onSellerPlatformSelected?: (hop: PlatformRouteHop) => void | Promise<void>;
++  /** Prefill the composer when opened from another entry point on the same page. */
++  draftMessage?: string;
++  onDraftMessageApplied?: () => void;
+ }
+ 
+ export function MatchChat({
+@@ -575,6 +578,8 @@ export function MatchChat({
+   onContactConsent,
+   onSellerDraft,
+   onSellerPlatformSelected,
++  draftMessage,
++  onDraftMessageApplied,
+ }: MatchChatProps) {
+   const copy = resolveChatCopy(subplatform, locale);
+   const runtime = runtimeChatCopy(locale);
+@@ -611,6 +616,15 @@ export function MatchChat({
+   const submitMessageRef = useRef<
+     ((rawText: string, session?: PartySession) => Promise<void>) | null
+   >(null);
++
++  useEffect(() => {
++    const next = draftMessage?.trim();
++    if (!next) return;
++    setMessage(next);
++    onDraftMessageApplied?.();
++    window.requestAnimationFrame(() => inputRef.current?.focus());
++  }, [draftMessage, onDraftMessageApplied]);
++
+   const [sellerRouteChoices, setSellerRouteChoices] = useState<
+     PlatformRouteHop[]
+   >([]);
+diff --git a/web/src/retail-ui.css b/web/src/retail-ui.css
+index bf1644c..3e1f4d0 100644
+--- a/web/src/retail-ui.css
++++ b/web/src/retail-ui.css
+@@ -603,6 +603,30 @@ select {
+   line-height: 1.7;
+ }
+ 
++.root-marketplace-need-prompt {
++  max-width: 38rem;
++  margin-top: 1.35rem;
++  display: grid;
++  grid-template-columns: minmax(0, 1fr) auto;
++  gap: 0.55rem;
++}
++
++.root-marketplace-need-input {
++  min-height: 2.85rem;
++  border-radius: 999px;
++  border: 1px solid var(--retail-line-strong);
++  background: var(--retail-paper);
++  padding-inline: 1rem;
++  font-size: 0.95rem;
++}
++
++.root-marketplace-need-prompt > button {
++  min-height: 2.85rem;
++  border-radius: 999px;
++  padding-inline: 1.1rem;
++  white-space: nowrap;
++}
++
+ .root-marketplace-catalog-actions {
+   flex: 0 0 auto;
+   display: flex;
+-- 
+2.43.0
+

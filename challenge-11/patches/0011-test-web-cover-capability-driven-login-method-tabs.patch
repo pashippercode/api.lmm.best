@@ -1,0 +1,102 @@
+From 7f073fa0a57d4ba7e5e8ca6f8d2bd388bd9fd622 Mon Sep 17 00:00:00 2001
+From: Cursor Agent <cursoragent@cursor.com>
+Date: Mon, 24 Aug 2026 13:14:18 +0000
+Subject: [PATCH 11/23] test(web): cover capability-driven login method tabs
+
+Verify the code and magic-link tabs appear once the server reports the
+delivery gateways configured, phone hints stay hidden otherwise, and
+registration keeps the email-only flow.
+---
+ web/src/components/LoginScreen.test.tsx | 76 +++++++++++++++++++++++++
+ 1 file changed, 76 insertions(+)
+
+diff --git a/web/src/components/LoginScreen.test.tsx b/web/src/components/LoginScreen.test.tsx
+index 7305f35..87033bb 100644
+--- a/web/src/components/LoginScreen.test.tsx
++++ b/web/src/components/LoginScreen.test.tsx
+@@ -68,6 +68,82 @@ afterEach(() => {
+ });
+ 
+ describe("LoginScreen", () => {
++  it("shows only the password form when no code delivery is configured", async () => {
++    window.history.replaceState(null, "", "/login");
++    render(<LoginScreen intent="sign-in" />);
++
++    expect(
++      await screen.findByRole("heading", { name: "继续使用你的账号" }),
++    ).toBeInTheDocument();
++    expect(screen.queryByRole("tablist")).not.toBeInTheDocument();
++    expect(screen.getByLabelText("邮箱")).toHaveAttribute(
++      "placeholder",
++      "name@example.com",
++    );
++  });
++
++  it("offers code and magic-link sign-in once the server reports them configured", async () => {
++    vi.stubGlobal(
++      "fetch",
++      vi.fn(
++        async () =>
++          new Response(
++            JSON.stringify({
++              emailOtp: true,
++              phoneOtp: true,
++              magicLink: true,
++              passkey: true,
++              social: ["wechat"],
++            }),
++            {
++              status: 200,
++              headers: { "content-type": "application/json" },
++            },
++          ),
++      ),
++    );
++    window.history.replaceState(null, "", "/login");
++    render(<LoginScreen intent="sign-in" />);
++
++    const tabs = await screen.findByRole("tablist", { name: "登录方式" });
++    expect(tabs).toBeInTheDocument();
++    expect(screen.getByRole("tab", { name: "验证码" })).toBeInTheDocument();
++    expect(screen.getByRole("tab", { name: "免密链接" })).toBeInTheDocument();
++    expect(screen.getByLabelText("邮箱或手机号")).toHaveAttribute(
++      "placeholder",
++      "name@example.com 或 138…",
++    );
++    expect(screen.getByRole("button", { name: "微信" })).toBeInTheDocument();
++  });
++
++  it("keeps registration on the email flow even when other methods exist", async () => {
++    vi.stubGlobal(
++      "fetch",
++      vi.fn(
++        async () =>
++          new Response(
++            JSON.stringify({
++              emailOtp: true,
++              phoneOtp: true,
++              magicLink: true,
++              passkey: true,
++            }),
++            {
++              status: 200,
++              headers: { "content-type": "application/json" },
++            },
++          ),
++      ),
++    );
++    render(<LoginScreen intent="sign-up" />);
++
++    expect(
++      await screen.findByRole("heading", { name: "创建你的账号" }),
++    ).toBeInTheDocument();
++    expect(screen.queryByRole("tablist")).not.toBeInTheDocument();
++    expect(screen.getByLabelText("邮箱")).toBeInTheDocument();
++  });
++
+   it("opens the password reset flow directly from account settings", async () => {
+     window.history.replaceState(
+       null,
+-- 
+2.43.0
+

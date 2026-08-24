@@ -1,0 +1,125 @@
+From a90f6ff34318e7c56af6ef42a848ab1da0b4c5a3 Mon Sep 17 00:00:00 2001
+From: Cursor Agent <cursoragent@cursor.com>
+Date: Mon, 24 Aug 2026 13:18:19 +0000
+Subject: [PATCH 18/23] fix(web): merge hero UX product-first compression from
+ challenge work
+
+Compact mall hero, smaller floating clerk, remove plum palette, soften store chat label.
+---
+ web/src/components/FloatingMarketplaceClerk.tsx | 10 +++++-----
+ web/src/components/StorefrontView.tsx           |  2 +-
+ web/src/lib/preferences.ts                      | 10 +++++-----
+ web/src/retail-ui.css                           |  8 ++++----
+ 4 files changed, 15 insertions(+), 15 deletions(-)
+
+diff --git a/web/src/components/FloatingMarketplaceClerk.tsx b/web/src/components/FloatingMarketplaceClerk.tsx
+index 70c8770..e3e9329 100644
+--- a/web/src/components/FloatingMarketplaceClerk.tsx
++++ b/web/src/components/FloatingMarketplaceClerk.tsx
+@@ -48,10 +48,10 @@ const COLLAPSED_HEIGHT = 68;
+ 
+ function initialLayout(): ClerkLayout {
+   if (typeof window === "undefined") {
+-    return { x: VIEWPORT_GUTTER, y: VIEWPORT_GUTTER, width: 500, height: 680 };
++    return { x: VIEWPORT_GUTTER, y: VIEWPORT_GUTTER, width: 400, height: 560 };
+   }
+-  const width = Math.min(500, window.innerWidth - VIEWPORT_GUTTER * 2);
+-  const height = Math.min(680, window.innerHeight - VIEWPORT_GUTTER * 2);
++  const width = Math.min(400, window.innerWidth - VIEWPORT_GUTTER * 2);
++  const height = Math.min(560, window.innerHeight - VIEWPORT_GUTTER * 2);
+   return {
+     width,
+     height,
+@@ -199,8 +199,8 @@ export function FloatingMarketplaceClerk({
+             disableDragging={!open}
+             dragHandleClassName="floating-clerk-drag-handle"
+             enableResizing={open && !collapsed}
+-            minWidth={400}
+-            minHeight={480}
++            minWidth={340}
++            minHeight={440}
+             maxWidth="calc(100vw - 2rem)"
+             maxHeight="calc(100dvh - 2rem)"
+             position={{ x: layout.x, y: layout.y }}
+diff --git a/web/src/components/StorefrontView.tsx b/web/src/components/StorefrontView.tsx
+index e70ac10..a1d6f83 100644
+--- a/web/src/components/StorefrontView.tsx
++++ b/web/src/components/StorefrontView.tsx
+@@ -208,7 +208,7 @@ export function StorefrontView({
+         >
+           <div className="storefront-manager-chat-heading">
+             <div>
+-              <p>{english ? "AI STORE MANAGER" : "AI 店长"}</p>
++              <p>{english ? "STORE CHAT" : "店铺咨询"}</p>
+               <h2 id="store-manager-chat-title">
+                 {english
+                   ? `Ask ${subplatform.brandName || subplatform.label}`
+diff --git a/web/src/lib/preferences.ts b/web/src/lib/preferences.ts
+index 6143fe6..e6f5dd3 100644
+--- a/web/src/lib/preferences.ts
++++ b/web/src/lib/preferences.ts
+@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
+ 
+ export type InterfaceTheme = "light" | "dark";
+ export type InterfaceLocale = "zh" | "en";
+-export type InterfacePalette = "ink" | "moss" | "clay" | "plum" | "amber";
++export type InterfacePalette = "ink" | "moss" | "clay" | "amber";
+ 
+ export const INTERFACE_PALETTES: ReadonlyArray<{
+   id: InterfacePalette;
+@@ -14,7 +14,6 @@ export const INTERFACE_PALETTES: ReadonlyArray<{
+   { id: "ink", swatch: "#171715", label: { zh: "墨色", en: "Ink" } },
+   { id: "moss", swatch: "#315c47", label: { zh: "苔绿", en: "Moss" } },
+   { id: "clay", swatch: "#a34a2b", label: { zh: "赤陶", en: "Clay" } },
+-  { id: "plum", swatch: "#6f506b", label: { zh: "梅紫", en: "Plum" } },
+   { id: "amber", swatch: "#8a5a10", label: { zh: "琥珀", en: "Amber" } },
+ ];
+ 
+@@ -34,9 +33,10 @@ export function useInterfacePreferences() {
+     const storedPalette = window.localStorage.getItem(PALETTE_KEY);
+     const nextTheme = storedTheme === "dark" ? "dark" : "light";
+     const nextLocale = storedLocale === "en" ? "en" : "zh";
+-    const nextPalette = isInterfacePalette(storedPalette)
+-      ? storedPalette
+-      : "ink";
++    const nextPalette =
++      storedPalette === "plum" || !isInterfacePalette(storedPalette)
++        ? "ink"
++        : storedPalette;
+     setThemeState(nextTheme);
+     setLocaleState(nextLocale);
+     setPaletteState(nextPalette);
+diff --git a/web/src/retail-ui.css b/web/src/retail-ui.css
+index 403acc8..e51a5bb 100644
+--- a/web/src/retail-ui.css
++++ b/web/src/retail-ui.css
+@@ -565,11 +565,11 @@ select {
+ }
+ 
+ .root-marketplace-catalog-intro {
+-  padding: clamp(1.5rem, 4vw, 3rem) 0;
++  padding: clamp(0.85rem, 2vw, 1.35rem) 0;
+   display: flex;
+   align-items: end;
+   justify-content: space-between;
+-  gap: 2rem;
++  gap: 1.25rem;
+   border-bottom: 1px solid var(--retail-line-strong);
+   background: transparent;
+ }
+@@ -591,10 +591,10 @@ select {
+   max-width: 13ch;
+   margin-top: 0.65rem;
+   color: var(--retail-ink);
+-  font-size: clamp(2.15rem, 4.1vw, 3.55rem);
++  font-size: clamp(1.7rem, 2.6vw, 2.35rem);
+   font-weight: 650;
+   line-height: 1.02;
+-  letter-spacing: -0.055em;
++  letter-spacing: -0.02em;
+ }
+ 
+ .root-marketplace-catalog-intro > div:first-child > span {
+-- 
+2.43.0
+

@@ -1,0 +1,353 @@
+From e53969af7bfbe0c79df1a7904f7adac387cf3323 Mon Sep 17 00:00:00 2001
+From: Cursor Agent <cursoragent@cursor.com>
+Date: Mon, 24 Aug 2026 13:10:26 +0000
+Subject: [PATCH 07/23] fix(web): simplify seller and store copy for
+ non-technical shop owners
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Replace marketplace jargon in the Chinese UI copy of SellerDashboard and
+StoreManagementPanel with plain shopkeeper language: 供给/需求方/撮合
+become 商品/买家/匹配, identity-configuration and supply-API errors tell
+the owner to contact mall staff, attachment wording becomes 图片, delivery
+modes are described concretely (快递发货, 到店或上门服务), and store
+lifecycle texts describe what customers see instead of catalogs and
+onboarding.
+---
+ ...verlays.test.tsx => ListingSheet.test.tsx} |  0
+ web/src/components/SellerDashboard.tsx        | 64 +++++++++----------
+ web/src/components/StoreManagementPanel.tsx   | 24 +++----
+ 3 files changed, 44 insertions(+), 44 deletions(-)
+ rename web/src/components/{Overlays.test.tsx => ListingSheet.test.tsx} (100%)
+
+diff --git a/web/src/components/Overlays.test.tsx b/web/src/components/ListingSheet.test.tsx
+similarity index 100%
+rename from web/src/components/Overlays.test.tsx
+rename to web/src/components/ListingSheet.test.tsx
+diff --git a/web/src/components/SellerDashboard.tsx b/web/src/components/SellerDashboard.tsx
+index 6699311..d66f124 100644
+--- a/web/src/components/SellerDashboard.tsx
++++ b/web/src/components/SellerDashboard.tsx
+@@ -87,20 +87,20 @@ const sellerEnglishFallbacks: Record<string, string> = {
+   pricingNotePlaceholder: "Explain the price, terms, or negotiable range",
+   advancedAttributesLabel: "Advanced attributes (JSON)",
+   reviewNotice:
+-    "New submissions start in review; the platform will not publish unconfirmed information.",
++    "The mall reviews every submission before buyers can see it.",
+   submittingLabel: "Submitting…",
+   submitForReviewLabel: "Submit for review",
+   submissionHistoryEyebrow: "Submission history",
+   submissionHistoryTitle: "Your offers on this platform",
+   noSubmissionHistoryLabel: "No uploads yet. Define your first offer.",
+-  demandDiscoveryEyebrow: "Matching",
+-  demandDiscoveryTitle: "Find published demand",
++  demandDiscoveryEyebrow: "Find buyers",
++  demandDiscoveryTitle: "See what buyers are looking for",
+   demandDiscoveryDescription:
+     "Only people who opted in to discovery appear here. Contact details are exchanged only after both sides agree.",
+   contactRequestsEyebrow: "Contact requests",
+   contactRequestsTitle:
+     "Both sides must agree before contact details are exchanged",
+-  contactRequestLabel: "A matching contact request",
++  contactRequestLabel: "A buyer wants to contact you",
+   contactVisibleLabel: "Ready to contact",
+   contactReadingLabel: "Loading…",
+   viewContactLabel: "View contact details",
+@@ -923,8 +923,8 @@ export function SellerDashboard({
+         role="tablist"
+         aria-label={copy(
+           "sellerSettingsSectionsLabel",
+-          "供给设置分区",
+-          "Supply settings sections",
++          "卖家功能分区",
++          "Seller sections",
+         )}
+       >
+         <button
+@@ -959,7 +959,7 @@ export function SellerDashboard({
+             className={activePanel === "demand" ? "is-active" : ""}
+             onClick={() => setActivePanel("demand")}
+           >
+-            {copy("sellerDemandTab", "需求匹配", "Demand")}
++            {copy("sellerDemandTab", "找买家", "Find buyers")}
+           </button>
+         )}
+         <button
+@@ -999,8 +999,8 @@ export function SellerDashboard({
+           />
+           <p className="seller-upload-intro">
+             {editingOffer
+-              ? "修改会生成新版本并回到待审核状态，通过后才会重新公开。"
+-              : "填写买家真正需要看到的信息。提交后进入审核，通过后才会公开展示。"}
++              ? "保存后商品会回到待审核状态，商城审核通过后买家才能看到新内容。"
++              : "填写买家真正需要看到的信息。提交后商城会先审核，通过后才会公开展示。"}
+           </p>
+           {editingOffer ? (
+             <div className="seller-edit-notice" role="status">
+@@ -1068,7 +1068,7 @@ export function SellerDashboard({
+             {attachments.length ? (
+               <ul
+                 className="seller-media-list"
+-                aria-label={copy("mediaListLabel", "已添加的附件")}
++                aria-label={copy("mediaListLabel", "已上传的图片")}
+               >
+                 {attachments.map((attachment) => (
+                   <li key={attachment.attachment_ref}>
+@@ -1078,7 +1078,7 @@ export function SellerDashboard({
+                     <small>{formatAttachmentSize(attachment.size_bytes)}</small>
+                     <button
+                       type="button"
+-                      aria-label={`${copy("removeMediaLabel", "移除附件")} ${attachment.file_name}`}
++                      aria-label={`${copy("removeMediaLabel", "删除图片")} ${attachment.file_name}`}
+                       onClick={() =>
+                         setAttachments((current) =>
+                           current.filter(
+@@ -1159,9 +1159,9 @@ export function SellerDashboard({
+                 required
+               >
+                 <option value="">选择交付方式</option>
+-                <option value="digital">在线交付</option>
+-                <option value="shipping">物流交付</option>
+-                <option value="service">线下或人工交付</option>
++                <option value="digital">线上发送（不用邮寄）</option>
++                <option value="shipping">快递发货</option>
++                <option value="service">到店或上门服务</option>
+               </select>
+             </label>
+             <label htmlFor="seller-stock">
+@@ -1183,7 +1183,7 @@ export function SellerDashboard({
+                 <FileUp size={17} aria-hidden="true" />{" "}
+                 {copy(
+                   "reviewNotice",
+-                  "提交后状态为“待审核”，平台不会自动发布未经确认的资料。",
++                  "提交后商城会先审核，审核通过才会展示给买家。",
+                 )}
+               </p>
+               <motion.button
+@@ -1202,7 +1202,7 @@ export function SellerDashboard({
+                   !isLiveMarketplaceEnabled()
+                     ? copy(
+                         "supplyApiUnavailableNotice",
+-                        "当前环境未启用真实供给 API，资料不会写入系统",
++                        "当前环境暂时无法发布商品，内容不会被保存",
+                         "The live supply API is disabled; nothing will be saved",
+                       )
+                     : undefined
+@@ -1252,7 +1252,7 @@ export function SellerDashboard({
+             <p>
+               {copy(
+                 "loadingSubmissionsLabel",
+-                "正在读取你的提交记录…",
++                "正在加载你的商品…",
+                 "Loading your submissions…",
+               )}
+             </p>
+@@ -1262,7 +1262,7 @@ export function SellerDashboard({
+             <FileUp size={24} aria-hidden="true" />
+             <p>{submissionsError}</p>
+             <button type="button" onClick={() => void loadSubmissions()}>
+-              {copy("reloadSubmissionsLabel", "重新读取", "Reload")}
++              {copy("reloadSubmissionsLabel", "重新加载", "Reload")}
+             </button>
+           </div>
+         ) : submissions.length ? (
+@@ -1407,13 +1407,13 @@ export function SellerDashboard({
+         >
+           <SectionHeading
+             titleId="seller-demand-title"
+-            eyebrow={copy("demandDiscoveryEyebrow", "供需撮合")}
+-            title={copy("demandDiscoveryTitle", "找到已公开的需求")}
++            eyebrow={copy("demandDiscoveryEyebrow", "找买家")}
++            title={copy("demandDiscoveryTitle", "看看哪些买家在找货")}
+           />
+           <p className="seller-discovery-intro">
+             {copy(
+               "demandDiscoveryDescription",
+-              "只有主动允许供给方发现的需求会出现在这里。你可以先查看是否合适；需求方发起联系后，双方都同意才会交换联系方式。",
++              "这里只显示愿意让商家看到的买家求购信息。买家联系你后，双方都同意才会交换联系方式。",
+             )}
+           </p>
+           {publishedOffers.length ? (
+@@ -1452,8 +1452,8 @@ export function SellerDashboard({
+                               )
+                             : copy(
+                                 "findDemandLabel",
+-                                "寻找需求",
+-                                "Find demand",
++                                "找买家",
++                                "Find buyers",
+                               )}
+                         <ArrowRight size={15} aria-hidden="true" />
+                       </button>
+@@ -1482,7 +1482,7 @@ export function SellerDashboard({
+                                 <span className="submission-status">
+                                   {copy(
+                                     "waitingDemandContactLabel",
+-                                    "等待需求方联系",
++                                    "等买家来联系",
+                                     "Waiting for the buyer to make contact",
+                                   )}
+                                 </span>
+@@ -1495,7 +1495,7 @@ export function SellerDashboard({
+                           <p>
+                             {copy(
+                               "noDemandMatchesLabel",
+-                              "暂时没有符合条件的公开需求。",
++                              "暂时没有合适的买家在找这类商品。",
+                               "No matching published demand yet.",
+                             )}
+                           </p>
+@@ -1511,8 +1511,8 @@ export function SellerDashboard({
+               <p>
+                 {copy(
+                   "demandDiscoveryEmptyLabel",
+-                  "供给审核通过并发布后，可以在这里寻找需求。",
+-                  "Once an offer is approved and published, you can find demand here.",
++                  "商品审核通过、上架后，就可以在这里找买家。",
++                  "Once an offer is approved and published, you can find buyers here.",
+                 )}
+               </p>
+             </div>
+@@ -1548,7 +1548,7 @@ export function SellerDashboard({
+                 <li key={introduction.introduction_id}>
+                   <div>
+                     <strong>
+-                      {copy("contactRequestLabel", "一条撮合联系申请")}
++                      {copy("contactRequestLabel", "有买家想和你联系")}
+                     </strong>
+                     <small>
+                       {introductionStatusLabel(introduction.status, locale)} ·{" "}
+@@ -1602,7 +1602,7 @@ export function SellerDashboard({
+                     <span className="submission-status">
+                       {copy(
+                         "waitingBuyerConfirmationLabel",
+-                        "等待需求方确认",
++                        "等买家确认",
+                         "Waiting for the buyer to confirm",
+                       )}
+                     </span>
+@@ -1612,7 +1612,7 @@ export function SellerDashboard({
+             </ol>
+           ) : (
+             <div className="seller-empty-state">
+-              <p>{copy("noContactRequestsLabel", "暂无待处理的联系申请。")}</p>
++              <p>{copy("noContactRequestsLabel", "还没有买家申请联系你。")}</p>
+             </div>
+           )}
+         </section>
+@@ -1937,14 +1937,14 @@ function introductionStatusLabel(
+   }
+   return (
+     {
+-      proposed: "已建立撮合",
++      proposed: "已匹配到买家",
+       contact_requested: "等待你的同意",
+       contact_released: "已同意交换",
+       completed: "已完成",
+       declined: "已拒绝",
+       expired: "已过期",
+       disputed: "处理中",
+-    }[status] ?? "撮合处理中"
++    }[status] ?? "处理中"
+   );
+ }
+ 
+diff --git a/web/src/components/StoreManagementPanel.tsx b/web/src/components/StoreManagementPanel.tsx
+index b6a6eba..2bfeecd 100644
+--- a/web/src/components/StoreManagementPanel.tsx
++++ b/web/src/components/StoreManagementPanel.tsx
+@@ -59,7 +59,7 @@ export function StoreManagementPanel({
+               ? error.message
+               : isEn
+                 ? "Failed to load store details"
+-                : "店铺资料读取失败",
++                : "店铺资料加载失败，请稍后再试",
+           );
+       })
+       .finally(() => {
+@@ -126,10 +126,10 @@ export function StoreManagementPanel({
+         action === "close"
+           ? isEn
+             ? "Store paused and hidden from public catalog"
+-            : "店铺已暂停营业，已从搜索和公开目录中隐藏"
++            : "店铺已暂停营业，顾客暂时看不到你的店铺和商品"
+           : isEn
+             ? "Store reopened and is now live"
+-            : "店铺已恢复营业，商品已重新对外开放",
++            : "店铺已恢复营业，顾客又能看到你的商品了",
+       );
+     } catch (error) {
+       onNotice(
+@@ -163,7 +163,7 @@ export function StoreManagementPanel({
+           <p>
+             {isEn
+               ? "Manage store profile, public description, and open/close operating status."
+-              : "管理店铺基本信息与营业状态。店长可自主开启或暂停对外营业。"}
++              : "在这里修改店铺信息，随时暂停或恢复营业。"}
+           </p>
+         </div>
+       </div>
+@@ -197,7 +197,7 @@ export function StoreManagementPanel({
+               {status === "suspended" && (
+                 <span className="store-status-badge is-suspended">
+                   <AlertTriangle size={13} aria-hidden="true" />
+-                  {isEn ? "Suspended by platform" : "已被平台暂停"}
++                  {isEn ? "Suspended by platform" : "已被商城暂停"}
+                 </span>
+               )}
+             </div>
+@@ -205,19 +205,19 @@ export function StoreManagementPanel({
+               {status === "active" &&
+                 (isEn
+                   ? "Your store and products are visible in search and recommendations. Customers can browse, consult, and place orders."
+-                  : "店铺正常对外展示。商品可被商城搜索和智能助手撮合推荐，顾客可正常发起咨询与下单。")}
++                  : "店铺正常营业中。顾客可以在商城里搜到你的商品，也能咨询和下单。")}
+               {status === "closed" &&
+                 (isEn
+                   ? "Your store is currently paused. Products are hidden from public search, but all data is safely kept. You can reopen at any time."
+-                  : "店铺当前处于暂停营业状态。商品已从公共搜索和推荐中隐藏，现有数据完整保留。您可以随时点击「恢复营业」重新开放。")}
++                  : "店铺已暂停营业，顾客暂时看不到你的商品。所有资料都完整保留，随时可以点「恢复营业」重新开张。")}
+               {status === "pending" &&
+                 (isEn
+                   ? "Store onboarding is being reviewed. It will become active once approved."
+-                  : "店铺接入与资料正在审核中，审核通过后将自动开放营业。")}
++                  : "店铺资料正在审核中，审核通过后就会自动开始营业。")}
+               {status === "suspended" &&
+                 (isEn
+                   ? "Store operations have been suspended by mall management. Please contact platform staff."
+-                  : "店铺已被商城管理暂停，店主无法自行恢复。如有疑问请联系商城客服或运营人员。")}
++                  : "店铺已被商城暂停，暂时无法自行恢复。有疑问请联系商城客服。")}
+             </p>
+           </div>
+ 
+@@ -265,7 +265,7 @@ export function StoreManagementPanel({
+               <p>
+                 {isEn
+                   ? "Once closed, the store and its products will be hidden from public search and cannot receive new orders. All catalog items, customer records, and settings remain safe and can be restored anytime."
+-                  : "暂停营业后，店铺及其旗下所有商品将从商城公开搜索与推荐列表中暂时隐藏，顾客将无法发起新的咨询或下单。所有商品数据、客户记录与经营历史均完整保留，您可以随时点击「恢复营业」重新开放。"}
++                  : "暂停营业后，顾客在商城里暂时看不到你的店铺和商品，也不能咨询或下单。所有商品和经营记录都会完整保留，随时可以点「恢复营业」重新开张。"}
+               </p>
+             </div>
+             <div className="store-lifecycle-confirm-actions">
+@@ -328,7 +328,7 @@ export function StoreManagementPanel({
+         </label>
+         <div className="store-management-meta">
+           <span>
+-            {isEn ? "Store URL:" : "店铺地址："} {current.path}
++            {isEn ? "Store URL:" : "店铺网址："} {current.path}
+           </span>
+           <span>
+             {isEn ? "Version:" : "资料版本："} v{current.version ?? 1}
+@@ -353,7 +353,7 @@ export function StoreManagementPanel({
+           <p className="store-management-readonly">
+             {isEn
+               ? "Staff can manage products; store profile and operating status are managed by the store owner."
+-              : "店员可以管理商品；店铺资料与营业状态由店长或商城后台维护。"}
++              : "店员可以管理商品；店铺资料和营业状态由店长或商城工作人员管理。"}
+           </p>
+         )}
+       </form>
+-- 
+2.43.0
+

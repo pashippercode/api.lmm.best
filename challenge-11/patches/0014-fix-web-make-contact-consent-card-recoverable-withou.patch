@@ -1,0 +1,236 @@
+From 8c03ad296562ae657893eb888827a995cb5cb2df Mon Sep 17 00:00:00 2001
+From: Cursor Agent <cursoragent@cursor.com>
+Date: Mon, 24 Aug 2026 13:15:18 +0000
+Subject: [PATCH 14/23] fix(web): make contact consent card recoverable without
+ losing the chat
+
+The empty-state link pointed at /?accountSection=account, a query nothing
+reads; it now opens the account bindings dialog in place via a cancelable
+window event (falling back to ?account=identity navigation). Add a
+re-check button after binding and a sign-in link on 401 instead of a
+useless retry.
+---
+ .../StoreContactConsentCard.test.tsx          | 61 ++++++++++++++++++-
+ .../components/StoreContactConsentCard.tsx    | 52 ++++++++++++++--
+ web/src/hooks/useSubplatformRoute.ts          | 15 +++++
+ 3 files changed, 120 insertions(+), 8 deletions(-)
+
+diff --git a/web/src/components/StoreContactConsentCard.test.tsx b/web/src/components/StoreContactConsentCard.test.tsx
+index e94176f..21e9a83 100644
+--- a/web/src/components/StoreContactConsentCard.test.tsx
++++ b/web/src/components/StoreContactConsentCard.test.tsx
+@@ -1,6 +1,6 @@
+ import { render, screen, waitFor } from "@testing-library/react";
+ import userEvent from "@testing-library/user-event";
+-import { beforeEach, describe, expect, it, vi } from "vitest";
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+ 
+ const getVerifiedContactChannels = vi.hoisted(() => vi.fn());
+ 
+@@ -9,6 +9,7 @@ vi.mock("../api", async () => {
+   return { ...actual, getVerifiedContactChannels };
+ });
+ 
++import { MarketplaceApiError } from "../api";
+ import { StoreContactConsentCard } from "./StoreContactConsentCard";
+ 
+ const action = {
+@@ -23,6 +24,10 @@ describe("StoreContactConsentCard", () => {
+     getVerifiedContactChannels.mockReset();
+   });
+ 
++  afterEach(() => {
++    vi.unstubAllGlobals();
++  });
++
+   it("shows verified bindings as read-only values and waits for explicit agreement", async () => {
+     const user = userEvent.setup();
+     const onAgree = vi.fn(async () => undefined);
+@@ -77,8 +82,60 @@ describe("StoreContactConsentCard", () => {
+     expect(await screen.findByText("没有已验证的邮箱或手机")).toBeVisible();
+     expect(screen.getByRole("link", { name: "前往账号绑定" })).toHaveAttribute(
+       "href",
+-      "/?accountSection=account",
++      "/?account=identity",
+     );
+     expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+   });
++
++  it("opens the account bindings dialog in place when the app shell listens", async () => {
++    const user = userEvent.setup();
++    getVerifiedContactChannels.mockResolvedValue([]);
++    const openedInApp = vi.fn((event: Event) => event.preventDefault());
++    window.addEventListener("matchplane.account.bindings", openedInApp);
++    try {
++      render(<StoreContactConsentCard action={action} locale="zh" />);
++      await user.click(
++        await screen.findByRole("link", { name: "前往账号绑定" }),
++      );
++      expect(openedInApp).toHaveBeenCalledTimes(1);
++    } finally {
++      window.removeEventListener("matchplane.account.bindings", openedInApp);
++    }
++  });
++
++  it("re-checks bindings after the user verifies one, without losing the chat", async () => {
++    const user = userEvent.setup();
++    getVerifiedContactChannels
++      .mockResolvedValueOnce([])
++      .mockResolvedValueOnce([
++        { type: "email", value: "buyer@example.com" },
++      ]);
++    render(<StoreContactConsentCard action={action} locale="zh" />);
++
++    await screen.findByText("没有已验证的邮箱或手机");
++    await user.click(
++      screen.getByRole("button", { name: "我已完成绑定，重新检测" }),
++    );
++
++    expect(await screen.findByText("buyer@example.com")).toBeVisible();
++    expect(
++      screen.getByRole("button", { name: "同意并申请联系" }),
++    ).toBeVisible();
++  });
++
++  it("offers a sign-in link instead of a useless retry when unauthenticated", async () => {
++    getVerifiedContactChannels.mockRejectedValue(
++      new MarketplaceApiError(401, "请先登录"),
++    );
++    render(<StoreContactConsentCard action={action} locale="zh" />);
++
++    expect(await screen.findByText("请先登录")).toBeVisible();
++    expect(screen.getByRole("link", { name: "前往登录" })).toHaveAttribute(
++      "href",
++      `/login?next=${encodeURIComponent("/")}`,
++    );
++    expect(
++      screen.queryByRole("button", { name: "重试" }),
++    ).not.toBeInTheDocument();
++  });
+ });
+diff --git a/web/src/components/StoreContactConsentCard.tsx b/web/src/components/StoreContactConsentCard.tsx
+index b337c07..d44e472 100644
+--- a/web/src/components/StoreContactConsentCard.tsx
++++ b/web/src/components/StoreContactConsentCard.tsx
+@@ -10,11 +10,18 @@ import { useEffect, useState } from "react";
+ 
+ import {
+   getVerifiedContactChannels,
++  MarketplaceApiError,
+   type MallAssistantContactConsentAction,
+   type VerifiedContactChannel,
+ } from "../api";
+ import type { InterfaceLocale } from "../lib/preferences";
+ 
++function currentLocation(): { pathname: string; search: string } {
++  return typeof window === "undefined"
++    ? { pathname: "/", search: "" }
++    : { pathname: window.location.pathname, search: window.location.search };
++}
++
+ export function StoreContactConsentCard({
+   action,
+   locale,
+@@ -30,14 +37,19 @@ export function StoreContactConsentCard({
+     "loading" | "ready" | "agreeing" | "accepted" | "declined" | "failed"
+   >("loading");
+   const [error, setError] = useState<string | null>(null);
++  const [signInRequired, setSignInRequired] = useState(false);
+ 
+   const load = async () => {
+     setStatus("loading");
+     setError(null);
++    setSignInRequired(false);
+     try {
+       setChannels(await getVerifiedContactChannels());
+       setStatus("ready");
+     } catch (cause) {
++      if (cause instanceof MarketplaceApiError && cause.status === 401) {
++        setSignInRequired(true);
++      }
+       setError(cause instanceof Error ? cause.message : english ? "Unable to load verified contact details." : "无法读取已验证联系方式。");
+       setStatus("failed");
+     }
+@@ -99,9 +111,20 @@ export function StoreContactConsentCard({
+       ) : status === "failed" ? (
+         <div className="store-contact-consent-error" role="alert">
+           <span>{error}</span>
+-          <button type="button" onClick={() => void load()}>
+-            {english ? "Retry" : "重试"}
+-          </button>
++          {signInRequired ? (
++            <a
++              href={(() => {
++                const { pathname, search } = currentLocation();
++                return `/login?next=${encodeURIComponent(`${pathname}${search}`)}`;
++              })()}
++            >
++              {english ? "Sign in" : "前往登录"}
++            </a>
++          ) : (
++            <button type="button" onClick={() => void load()}>
++              {english ? "Retry" : "重试"}
++            </button>
++          )}
+         </div>
+       ) : channels.length ? (
+         <>
+@@ -163,9 +186,26 @@ export function StoreContactConsentCard({
+               ? "Bind and verify a contact method in Account before agreeing. Manual entry is not supported."
+               : "请先在账号中绑定并验证联系方式；平台不支持手填。"}
+           </span>
+-          <a href="/?accountSection=account">
+-            {english ? "Open account bindings" : "前往账号绑定"}
+-          </a>
++          <div className="store-contact-consent-empty-actions">
++            <a
++              href={`${currentLocation().pathname}?account=identity`}
++              onClick={(event) => {
++                // The app shell opens the account dialog in place (and cancels this
++                // event) so the ongoing store chat is not lost to a full navigation.
++                const handledInApp = !window.dispatchEvent(
++                  new CustomEvent("matchplane.account.bindings", {
++                    cancelable: true,
++                  }),
++                );
++                if (handledInApp) event.preventDefault();
++              }}
++            >
++              {english ? "Open account bindings" : "前往账号绑定"}
++            </a>
++            <button type="button" onClick={() => void load()}>
++              {english ? "I bound one — check again" : "我已完成绑定，重新检测"}
++            </button>
++          </div>
+         </div>
+       )}
+     </section>
+diff --git a/web/src/hooks/useSubplatformRoute.ts b/web/src/hooks/useSubplatformRoute.ts
+index 9e7ef9b..02d2655 100644
+--- a/web/src/hooks/useSubplatformRoute.ts
++++ b/web/src/hooks/useSubplatformRoute.ts
+@@ -210,6 +210,21 @@ export function useSubplatformRoute({
+     );
+   }, [authResolved, hydrated, role]);
+ 
++  // In-page requests (for example the contact consent card) open the account
++  // bindings dialog without a full navigation, so an ongoing chat is not lost.
++  useEffect(() => {
++    const openAccountBindings = (event: Event) => {
++      event.preventDefault();
++      setAccountSettingsSection("account");
++    };
++    window.addEventListener("matchplane.account.bindings", openAccountBindings);
++    return () =>
++      window.removeEventListener(
++        "matchplane.account.bindings",
++        openAccountBindings,
++      );
++  }, []);
++
+   return {
+     role,
+     setRole,
+-- 
+2.43.0
+

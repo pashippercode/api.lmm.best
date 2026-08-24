@@ -1,0 +1,1428 @@
+From 33646af430db1ada6a35ae959076bbd4184246c2 Mon Sep 17 00:00:00 2001
+From: Cursor Agent <cursoragent@cursor.com>
+Date: Mon, 24 Aug 2026 13:12:38 +0000
+Subject: [PATCH 09/23] feat(web): product-first listing card and offer detail
+ polish
+
+Rework the marketplace listing card into a product-first layout: landscape
+4:3 photo, two-line title, key-spec line built from listing facts and
+location, price as the single warm accent, and the store line at the foot.
+Drop the pull-box metaphor, hidden lid element, and archive code; the title
+button's hit area now stretches across the whole card.
+
+Move ListingSheet out of Overlays into its own module, surface the price
+directly under the title, render the facts grid only when it has content,
+and show the long description after the facts.
+
+Remap the sheet's legacy local tokens onto the retail theme so the offer
+detail follows palettes and dark mode, add a --retail-price token, and match
+the loading skeleton to the new landscape cards.
+---
+ web/src/components/ListingSheet.test.tsx      |   2 +-
+ web/src/components/ListingSheet.tsx           | 373 +++++++++++++++++
+ web/src/components/MarketplaceListingCard.tsx | 160 ++++----
+ web/src/components/Overlays.tsx               | 378 +-----------------
+ web/src/components/index.ts                   |   2 +
+ .../components/shell/PlatformOverlaysHost.tsx |   3 +-
+ web/src/retail-ui.css                         | 225 ++++++-----
+ 7 files changed, 578 insertions(+), 565 deletions(-)
+ create mode 100644 web/src/components/ListingSheet.tsx
+
+diff --git a/web/src/components/ListingSheet.test.tsx b/web/src/components/ListingSheet.test.tsx
+index 52ffbef..5197be0 100644
+--- a/web/src/components/ListingSheet.test.tsx
++++ b/web/src/components/ListingSheet.test.tsx
+@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from "vitest";
+ 
+ import type { AssetListing } from "../types";
+ import type { SubplatformConfig } from "../subplatform";
+-import { ListingSheet } from "./Overlays";
++import { ListingSheet } from "./ListingSheet";
+ 
+ const listing: AssetListing = {
+   id: "offer-1",
+diff --git a/web/src/components/ListingSheet.tsx b/web/src/components/ListingSheet.tsx
+new file mode 100644
+index 0000000..774b332
+--- /dev/null
++++ b/web/src/components/ListingSheet.tsx
+@@ -0,0 +1,373 @@
++import { Button } from "@appica/ui-react/button";
++import {
++  Drawer,
++  DrawerBody,
++  DrawerClose,
++  DrawerContent,
++  DrawerDescription,
++  DrawerFooter,
++  DrawerHeader,
++  DrawerTitle,
++} from "@appica/ui-react/drawer";
++import { useMediaQuery } from "@appica/ui-react/hooks/use-media-query";
++import { Check, ChevronLeft, ChevronRight, LockKeyhole, X } from "lucide-react";
++import { useEffect, useState } from "react";
++
++import { localizedSubplatformCopy } from "../lib/localized-copy";
++import type { InterfaceLocale } from "../lib/preferences";
++import type { SubplatformConfig } from "../subplatform";
++import type { AssetListing } from "../types";
++import { ListingVisual } from "./Primitives";
++
++interface ListingSheetProps {
++  listing: AssetListing | null;
++  subplatform: SubplatformConfig;
++  locale: InterfaceLocale;
++  onClose: () => void;
++  onContact: (listing: AssetListing) => Promise<void> | void;
++  onManage?: (listing: AssetListing) => Promise<void> | void;
++  /** Contact requests are disabled when the host is running without a live API. */
++  contactDisabled?: boolean;
++}
++
++export function ListingSheet({
++  listing,
++  subplatform,
++  locale,
++  onClose,
++  onContact,
++  onManage,
++  contactDisabled = false,
++}: ListingSheetProps) {
++  const desktop = useMediaQuery("(min-width: 56rem)");
++  const [contactSubmitting, setContactSubmitting] = useState(false);
++  const [contactSubmitted, setContactSubmitted] = useState(false);
++  const [activeImageIndex, setActiveImageIndex] = useState(0);
++  const copy = (key: string, fallbackZh: string, fallbackEn: string) =>
++    localizedSubplatformCopy(subplatform, locale, key, fallbackZh, fallbackEn);
++
++  useEffect(() => {
++    setContactSubmitting(false);
++    setContactSubmitted(false);
++    setActiveImageIndex(0);
++  }, [listing?.id]);
++
++  const images = listing
++    ? listing.imageUrls?.length
++      ? listing.imageUrls
++      : listing.imageUrl
++        ? [listing.imageUrl]
++        : []
++    : [];
++  const selectRelativeImage = (offset: number) => {
++    if (images.length < 2) return;
++    setActiveImageIndex(
++      (current) => (current + offset + images.length) % images.length,
++    );
++  };
++
++  const submitContact = async () => {
++    if (!listing || contactSubmitting) return;
++    setContactSubmitting(true);
++    try {
++      await onContact(listing);
++      setContactSubmitted(true);
++    } catch {
++      // Host surfaces the failure notice; keep the sheet actionable.
++    } finally {
++      setContactSubmitting(false);
++    }
++  };
++
++  return (
++    <Drawer
++      side={desktop ? "right" : "bottom"}
++      open={Boolean(listing)}
++      onOpenChange={(nextOpen) => {
++        if (!nextOpen) onClose();
++      }}
++    >
++      {listing ? (
++        <DrawerContent
++          className="listing-sheet"
++          closeButton={false}
++          closeLabel={copy(
++            "closeOfferDetailLabel",
++            "关闭供给详情",
++            "Close offer details",
++          )}
++          frame={false}
++        >
++          <DrawerHeader className="sheet-header">
++            <span className="sheet-label">
++              {copy("offerDetailLabel", "供给详情", "Offer details")}
++            </span>
++            <DrawerDescription className="sr-only">
++              {listing.subtitle ||
++                copy(
++                  "offerDetailDescription",
++                  "查看商品信息并申请联系",
++                  "Review product details and request contact",
++                )}
++            </DrawerDescription>
++            <DrawerClose
++              render={
++                <Button
++                  variant="ghost"
++                  size="icon-sm"
++                  className="sheet-close"
++                  type="button"
++                  aria-label={copy(
++                    "closeOfferDetailLabel",
++                    "关闭供给详情",
++                    "Close offer details",
++                  )}
++                >
++                  <X size={20} aria-hidden="true" />
++                </Button>
++              }
++            />
++          </DrawerHeader>
++          <DrawerBody className="sheet-scroll">
++            <div
++              className="listing-gallery"
++              tabIndex={images.length > 1 ? 0 : -1}
++              aria-label={copy("galleryLabel", "商品图片", "Product images")}
++              onKeyDown={(event) => {
++                if (event.key === "ArrowLeft") selectRelativeImage(-1);
++                if (event.key === "ArrowRight") selectRelativeImage(1);
++              }}
++            >
++              <ListingVisual
++                accent={listing.accent}
++                imageUrl={images[activeImageIndex] ?? listing.imageUrl}
++                alt={
++                  images.length > 1
++                    ? `${listing.title} ${activeImageIndex + 1}/${images.length}`
++                    : listing.title
++                }
++              />
++              {images.length > 1 ? (
++                <>
++                  <button
++                    className="listing-gallery-arrow is-previous"
++                    type="button"
++                    aria-label={copy(
++                      "previousImageLabel",
++                      "上一张图片",
++                      "Previous image",
++                    )}
++                    onClick={() => selectRelativeImage(-1)}
++                  >
++                    <ChevronLeft size={19} aria-hidden="true" />
++                  </button>
++                  <button
++                    className="listing-gallery-arrow is-next"
++                    type="button"
++                    aria-label={copy(
++                      "nextImageLabel",
++                      "下一张图片",
++                      "Next image",
++                    )}
++                    onClick={() => selectRelativeImage(1)}
++                  >
++                    <ChevronRight size={19} aria-hidden="true" />
++                  </button>
++                  <span className="listing-gallery-count">
++                    {activeImageIndex + 1} / {images.length}
++                  </span>
++                </>
++              ) : null}
++            </div>
++            {images.length > 1 ? (
++              <div
++                className="listing-gallery-thumbnails"
++                aria-label={copy(
++                  "thumbnailLabel",
++                  "选择商品图片",
++                  "Choose product image",
++                )}
++              >
++                {images.map((image, index) => (
++                  <button
++                    key={image}
++                    type="button"
++                    aria-label={`${copy("imageLabel", "图片", "Image")} ${index + 1}`}
++                    aria-current={
++                      index === activeImageIndex ? "true" : undefined
++                    }
++                    onClick={() => setActiveImageIndex(index)}
++                  >
++                    <img src={image} alt="" />
++                  </button>
++                ))}
++              </div>
++            ) : null}
++            <DrawerTitle id="listing-sheet-title">{listing.title}</DrawerTitle>
++            <p className="sheet-subtitle">{listing.subtitle}</p>
++            <div className="sheet-price">
++              <strong>{listing.price}</strong>
++              {listing.priceLabel ? <span>{listing.priceLabel}</span> : null}
++            </div>
++            {listing.facts.length || listing.location ? (
++              <dl className="sheet-facts">
++                {listing.facts.map((fact) => (
++                  <div key={`${fact.label}-${fact.value}`}>
++                    <dt>{fact.label}</dt>
++                    <dd>{fact.value}</dd>
++                  </div>
++                ))}
++                {listing.location ? (
++                  <div>
++                    <dt>{copy("locationLabel", "位置", "Location")}</dt>
++                    <dd>{listing.location}</dd>
++                  </div>
++                ) : null}
++              </dl>
++            ) : null}
++            {listing.description ? (
++              <p className="sheet-description">{listing.description}</p>
++            ) : null}
++
++            {listing.reasons?.length ? (
++              <section className="sheet-section">
++                <h3>
++                  {copy("matchReasonsTitle", "匹配理由", "Why it matches")}
++                </h3>
++                <ul className="reason-list">
++                  {listing.reasons.map((reason) => (
++                    <li key={reason}>
++                      <span>
++                        <Check size={14} aria-hidden="true" />
++                      </span>
++                      {reason}
++                    </li>
++                  ))}
++                </ul>
++              </section>
++            ) : null}
++
++            {listing.risks?.length ? (
++              <section className="sheet-section risk-section">
++                <h3>
++                  {copy("matchRisksTitle", "需要留意", "Things to consider")}
++                </h3>
++                <ul className="reason-list">
++                  {listing.risks.map((risk) => (
++                    <li key={risk}>
++                      <span>!</span>
++                      {risk}
++                    </li>
++                  ))}
++                </ul>
++              </section>
++            ) : null}
++
++            {listing.seller ? (
++              <section className="sheet-section trust-section">
++                <div className="seller-line">
++                  <span className="seller-avatar">
++                    {listing.seller.slice(0, 1)}
++                  </span>
++                  <div>
++                    <strong>{listing.seller}</strong>
++                    {listing.response ? (
++                      <small>{listing.response}</small>
++                    ) : null}
++                  </div>
++                </div>
++              </section>
++            ) : null}
++
++            {onManage ? null : (
++              <section className="offline-contact-card">
++                <span className="contact-icon">
++                  <LockKeyhole aria-hidden="true" />
++                </span>
++                <div>
++                  <h3>
++                    {copy(
++                      "contactTitle",
++                      "申请联系需双方同意",
++                      "Contact needs mutual consent",
++                    )}
++                  </h3>
++                  <p>
++                    {copy(
++                      "contactDescription",
++                      "提交后只写入撮合申请。只有双方明确同意后，才解锁已验证的联系方式。",
++                      "This only records a match request. Verified contact details unlock only after both sides explicitly agree.",
++                    )}
++                  </p>
++                </div>
++              </section>
++            )}
++          </DrawerBody>
++          <DrawerFooter
++            className={`sheet-footer${onManage ? " is-owner" : ""}`}
++          >
++            {onManage ? null : (
++              <div>
++                {contactSubmitted ? (
++                  <small className="sheet-contact-success" role="status">
++                    {copy(
++                      "contactSubmittedLabel",
++                      "联系申请已发送，等待供给方同意",
++                      "Contact request sent; waiting for the supply side",
++                    )}
++                  </small>
++                ) : (
++                  <small>
++                    {copy(
++                      "contactFooterHint",
++                      "不会自动交换电话或微信",
++                      "Phone and WeChat are never shared automatically",
++                    )}
++                  </small>
++                )}
++              </div>
++            )}
++            <Button
++              className="button button-dark"
++              type="button"
++              onClick={() =>
++                onManage ? void onManage(listing) : void submitContact()
++              }
++              disabled={
++                !onManage &&
++                (contactSubmitting || contactSubmitted || contactDisabled)
++              }
++              title={
++                contactDisabled
++                  ? copy(
++                      "contactUnavailableTitle",
++                      "当前环境未连接真实撮合 API",
++                      "The live matching API is not connected",
++                    )
++                  : undefined
++              }
++            >
++              {onManage
++                ? copy("manageProductLabel", "管理商品", "Manage product")
++                : contactSubmitting
++                  ? copy("contactSubmittingLabel", "正在提交…", "Submitting…")
++                  : contactSubmitted
++                    ? copy("contactSubmittedButton", "已发送", "Sent")
++                    : contactDisabled
++                      ? copy(
++                          "contactUnavailableLabel",
++                          "当前暂不可用",
++                          "Unavailable right now",
++                        )
++                      : copy(
++                          "requestContactLabel",
++                          "申请联系",
++                          "Request contact",
++                        )}
++            </Button>
++          </DrawerFooter>
++        </DrawerContent>
++      ) : null}
++    </Drawer>
++  );
++}
+diff --git a/web/src/components/MarketplaceListingCard.tsx b/web/src/components/MarketplaceListingCard.tsx
+index 40a81b3..8811a30 100644
+--- a/web/src/components/MarketplaceListingCard.tsx
++++ b/web/src/components/MarketplaceListingCard.tsx
+@@ -1,7 +1,7 @@
+ "use client";
+ 
+ import { Button } from "@appica/ui-react/button";
+-import { ArrowRight, Heart } from "lucide-react";
++import { Heart } from "lucide-react";
+ import { useState } from "react";
+ 
+ import { listingIdFromBackend } from "../api";
+@@ -24,6 +24,16 @@ function likeLabel(
+     : `给${title}点赞：已点 ${viewerLikeCount}/5，共 ${likeTotal} 个赞`;
+ }
+ 
++/** Key facts under the title, used-car-listing style: "2019年 · 3.2万公里 · 杭州". */
++function keySpecs(listing: AssetListing) {
++  const values = listing.facts
++    .filter((fact) => fact.key !== "category")
++    .map((fact) => fact.value.trim())
++    .filter(Boolean);
++  if (listing.location) values.push(listing.location);
++  return values.slice(0, 3).join(" · ");
++}
++
+ export function MarketplaceListingCard({
+   listing,
+   locale,
+@@ -44,99 +54,85 @@ export function MarketplaceListingCard({
+   const likeOfferId = listing.offerId ?? listingIdFromBackend(listing);
+   const likeEnabled = Boolean(onLike && likeOfferId);
+   const sellerLabel = listing.storeName || listing.seller || listing.subtitle;
+-  const showSubtitle = Boolean(
+-    listing.subtitle && listing.subtitle !== sellerLabel,
+-  );
+-  const archiveCode = (listing.offerId ?? listing.id)
+-    .replace(/[^a-z0-9]/gi, "")
+-    .slice(-6)
+-    .toUpperCase()
+-    .padStart(6, "0");
++  const specs =
++    keySpecs(listing) ||
++    (listing.subtitle !== sellerLabel ? listing.subtitle : "");
+ 
+   return (
+     <article
+       className={`marketplace-product-card${compact ? " is-chat-recommendation" : ""}`}
+       data-accent={listing.accent || "cactus"}
+     >
+-      <div className="marketplace-product-box">
+-        <div className="marketplace-product-lid" aria-hidden="true" />
+-        <div className="marketplace-product-media">
+-          {listing.imageUrl && !imageFailed ? (
+-            <img
+-              src={listing.imageUrl}
+-              alt={listing.title}
+-              loading="lazy"
+-              onError={() => setImageFailed(true)}
++      <div className="marketplace-product-media">
++        {listing.imageUrl && !imageFailed ? (
++          <img
++            src={listing.imageUrl}
++            alt={listing.title}
++            loading="lazy"
++            onError={() => setImageFailed(true)}
++          />
++        ) : (
++          <div
++            className="marketplace-product-fallback"
++            role="img"
++            aria-label={listing.title}
++          >
++            <span>{listing.title.slice(0, 2)}</span>
++          </div>
++        )}
++        {likeEnabled ? (
++          <Button
++            className="marketplace-like-button"
++            type="button"
++            variant="ghost"
++            aria-label={likeLabel(
++              locale,
++              listing.title,
++              viewerLikeCount,
++              likeTotal,
++            )}
++            aria-pressed={viewerLikeCount > 0}
++            disabled={liking || viewerLikeCount >= 5}
++            title={
++              viewerLikeCount >= 5
++                ? locale === "en"
++                  ? "Like limit reached (5)"
++                  : "已达点赞上限（5）"
++                : undefined
++            }
++            onClick={() => {
++              if (!onLike || viewerLikeCount >= 5) return;
++              setLiking(true);
++              void onLike().finally(() => setLiking(false));
++            }}
++          >
++            <Heart
++              fill={viewerLikeCount > 0 ? "currentColor" : "none"}
++              aria-hidden="true"
+             />
+-          ) : (
+-            <div
+-              className="marketplace-product-fallback"
+-              role="img"
+-              aria-label={listing.title}
+-            >
+-              <span>{listing.title.slice(0, 2)}</span>
+-            </div>
+-          )}
+-          <span className="marketplace-product-code" aria-hidden="true">
+-            MP-{archiveCode}
+-          </span>
+-          {likeEnabled ? (
+-            <Button
+-              className="marketplace-like-button"
+-              type="button"
+-              variant="ghost"
+-              aria-label={likeLabel(
+-                locale,
+-                listing.title,
+-                viewerLikeCount,
+-                likeTotal,
+-              )}
+-              aria-pressed={viewerLikeCount > 0}
+-              disabled={liking || viewerLikeCount >= 5}
+-              title={
+-                viewerLikeCount >= 5
+-                  ? locale === "en"
+-                    ? "Like limit reached (5)"
+-                    : "已达点赞上限（5）"
+-                  : undefined
+-              }
+-              onClick={() => {
+-                if (!onLike || viewerLikeCount >= 5) return;
+-                setLiking(true);
+-                void onLike().finally(() => setLiking(false));
+-              }}
+-            >
+-              <Heart
+-                fill={viewerLikeCount > 0 ? "currentColor" : "none"}
+-                aria-hidden="true"
+-              />
+-              <span aria-live="polite">{likeTotal}</span>
+-            </Button>
+-          ) : null}
++            <span aria-live="polite">{likeTotal}</span>
++          </Button>
++        ) : null}
++      </div>
++      <div className="marketplace-product-info">
++        <button
++          className="marketplace-product-title"
++          type="button"
++          onClick={onOpen}
++        >
++          {listing.title}
++        </button>
++        {specs ? <p className="marketplace-product-specs">{specs}</p> : null}
++        <div className="marketplace-product-price-row">
++          <strong>{listing.price}</strong>
++          {listing.priceLabel ? <span>{listing.priceLabel}</span> : null}
+         </div>
+-        <div className="marketplace-product-end-label">
++        {sellerLabel ? (
+           <div className="marketplace-product-origin">
+             <i aria-hidden="true" />
+             <span>{sellerLabel}</span>
+           </div>
+-          <button
+-            className="marketplace-product-title"
+-            type="button"
+-            onClick={onOpen}
+-          >
+-            {listing.title}
+-          </button>
+-          {showSubtitle ? (
+-            <p className="marketplace-product-subtitle">{listing.subtitle}</p>
+-          ) : null}
+-          <div className="marketplace-product-price-row">
+-            <strong>{listing.price}</strong>
+-            <button type="button" onClick={onOpen}>
+-              {locale === "en" ? "Pull box" : "抽出查看"}
+-              <ArrowRight aria-hidden="true" />
+-            </button>
+-          </div>
+-        </div>
++        ) : null}
+       </div>
+     </article>
+   );
+diff --git a/web/src/components/Overlays.tsx b/web/src/components/Overlays.tsx
+index 716fb25..d97af91 100644
+--- a/web/src/components/Overlays.tsx
++++ b/web/src/components/Overlays.tsx
+@@ -9,383 +9,7 @@ import {
+   AlertDialogTitle,
+ } from "@appica/ui-react/alert-dialog";
+ import { Button } from "@appica/ui-react/button";
+-import {
+-  Drawer,
+-  DrawerBody,
+-  DrawerClose,
+-  DrawerContent,
+-  DrawerDescription,
+-  DrawerFooter,
+-  DrawerHeader,
+-  DrawerTitle,
+-} from "@appica/ui-react/drawer";
+-import { useMediaQuery } from "@appica/ui-react/hooks/use-media-query";
+-import {
+-  Check,
+-  ChevronLeft,
+-  ChevronRight,
+-  LockKeyhole,
+-  ShieldCheck,
+-  X,
+-} from "lucide-react";
+-import { useEffect, useState } from "react";
+-
+-import { localizedSubplatformCopy } from "../lib/localized-copy";
+-import type { InterfaceLocale } from "../lib/preferences";
+-import type { SubplatformConfig } from "../subplatform";
+-import type { AssetListing } from "../types";
+-import { ListingVisual } from "./Primitives";
+-
+-interface ListingSheetProps {
+-  listing: AssetListing | null;
+-  subplatform: SubplatformConfig;
+-  locale: InterfaceLocale;
+-  onClose: () => void;
+-  onContact: (listing: AssetListing) => Promise<void> | void;
+-  onManage?: (listing: AssetListing) => Promise<void> | void;
+-  /** Contact requests are disabled when the host is running without a live API. */
+-  contactDisabled?: boolean;
+-}
+-
+-export function ListingSheet({
+-  listing,
+-  subplatform,
+-  locale,
+-  onClose,
+-  onContact,
+-  onManage,
+-  contactDisabled = false,
+-}: ListingSheetProps) {
+-  const desktop = useMediaQuery("(min-width: 56rem)");
+-  const [contactSubmitting, setContactSubmitting] = useState(false);
+-  const [contactSubmitted, setContactSubmitted] = useState(false);
+-  const [activeImageIndex, setActiveImageIndex] = useState(0);
+-  const copy = (key: string, fallbackZh: string, fallbackEn: string) =>
+-    localizedSubplatformCopy(subplatform, locale, key, fallbackZh, fallbackEn);
+-
+-  useEffect(() => {
+-    setContactSubmitting(false);
+-    setContactSubmitted(false);
+-    setActiveImageIndex(0);
+-  }, [listing?.id]);
+-
+-  const images = listing
+-    ? listing.imageUrls?.length
+-      ? listing.imageUrls
+-      : listing.imageUrl
+-        ? [listing.imageUrl]
+-        : []
+-    : [];
+-  const selectRelativeImage = (offset: number) => {
+-    if (images.length < 2) return;
+-    setActiveImageIndex(
+-      (current) => (current + offset + images.length) % images.length,
+-    );
+-  };
+-
+-  const submitContact = async () => {
+-    if (!listing || contactSubmitting) return;
+-    setContactSubmitting(true);
+-    try {
+-      await onContact(listing);
+-      setContactSubmitted(true);
+-    } catch {
+-      // Host surfaces the failure notice; keep the sheet actionable.
+-    } finally {
+-      setContactSubmitting(false);
+-    }
+-  };
+-
+-  return (
+-    <Drawer
+-      side={desktop ? "right" : "bottom"}
+-      open={Boolean(listing)}
+-      onOpenChange={(nextOpen) => {
+-        if (!nextOpen) onClose();
+-      }}
+-    >
+-      {listing ? (
+-        <DrawerContent
+-          className="listing-sheet"
+-          closeButton={false}
+-          closeLabel={copy(
+-            "closeOfferDetailLabel",
+-            "关闭供给详情",
+-            "Close offer details",
+-          )}
+-          frame={false}
+-        >
+-          <DrawerHeader className="sheet-header">
+-            <span className="sheet-label">
+-              {copy("offerDetailLabel", "供给详情", "Offer details")}
+-            </span>
+-            <DrawerDescription className="sr-only">
+-              {listing.subtitle ||
+-                copy(
+-                  "offerDetailDescription",
+-                  "查看商品信息并申请联系",
+-                  "Review product details and request contact",
+-                )}
+-            </DrawerDescription>
+-            <DrawerClose
+-              render={
+-                <Button
+-                  variant="ghost"
+-                  size="icon-sm"
+-                  className="sheet-close"
+-                  type="button"
+-                  aria-label={copy(
+-                    "closeOfferDetailLabel",
+-                    "关闭供给详情",
+-                    "Close offer details",
+-                  )}
+-                >
+-                  <X size={20} aria-hidden="true" />
+-                </Button>
+-              }
+-            />
+-          </DrawerHeader>
+-          <DrawerBody className="sheet-scroll">
+-            <div
+-              className="listing-gallery"
+-              tabIndex={images.length > 1 ? 0 : -1}
+-              aria-label={copy("galleryLabel", "商品图片", "Product images")}
+-              onKeyDown={(event) => {
+-                if (event.key === "ArrowLeft") selectRelativeImage(-1);
+-                if (event.key === "ArrowRight") selectRelativeImage(1);
+-              }}
+-            >
+-              <ListingVisual
+-                accent={listing.accent}
+-                imageUrl={images[activeImageIndex] ?? listing.imageUrl}
+-                alt={
+-                  images.length > 1
+-                    ? `${listing.title} ${activeImageIndex + 1}/${images.length}`
+-                    : listing.title
+-                }
+-              />
+-              {images.length > 1 ? (
+-                <>
+-                  <button
+-                    className="listing-gallery-arrow is-previous"
+-                    type="button"
+-                    aria-label={copy(
+-                      "previousImageLabel",
+-                      "上一张图片",
+-                      "Previous image",
+-                    )}
+-                    onClick={() => selectRelativeImage(-1)}
+-                  >
+-                    <ChevronLeft size={19} aria-hidden="true" />
+-                  </button>
+-                  <button
+-                    className="listing-gallery-arrow is-next"
+-                    type="button"
+-                    aria-label={copy(
+-                      "nextImageLabel",
+-                      "下一张图片",
+-                      "Next image",
+-                    )}
+-                    onClick={() => selectRelativeImage(1)}
+-                  >
+-                    <ChevronRight size={19} aria-hidden="true" />
+-                  </button>
+-                  <span className="listing-gallery-count">
+-                    {activeImageIndex + 1} / {images.length}
+-                  </span>
+-                </>
+-              ) : null}
+-            </div>
+-            {images.length > 1 ? (
+-              <div
+-                className="listing-gallery-thumbnails"
+-                aria-label={copy(
+-                  "thumbnailLabel",
+-                  "选择商品图片",
+-                  "Choose product image",
+-                )}
+-              >
+-                {images.map((image, index) => (
+-                  <button
+-                    key={image}
+-                    type="button"
+-                    aria-label={`${copy("imageLabel", "图片", "Image")} ${index + 1}`}
+-                    aria-current={
+-                      index === activeImageIndex ? "true" : undefined
+-                    }
+-                    onClick={() => setActiveImageIndex(index)}
+-                  >
+-                    <img src={image} alt="" />
+-                  </button>
+-                ))}
+-              </div>
+-            ) : null}
+-            <DrawerTitle id="listing-sheet-title">{listing.title}</DrawerTitle>
+-            <p className="sheet-subtitle">{listing.subtitle}</p>
+-            {listing.description ? (
+-              <p className="sheet-description">{listing.description}</p>
+-            ) : null}
+-            <div className="sheet-price">
+-              <strong>{listing.price}</strong>
+-              {listing.priceLabel ? <span>{listing.priceLabel}</span> : null}
+-            </div>
+-            <dl className="sheet-facts">
+-              {listing.facts.map((fact) => (
+-                <div key={`${fact.label}-${fact.value}`}>
+-                  <dt>{fact.label}</dt>
+-                  <dd>{fact.value}</dd>
+-                </div>
+-              ))}
+-              {listing.location ? (
+-                <div>
+-                  <dt>{copy("locationLabel", "位置", "Location")}</dt>
+-                  <dd>{listing.location}</dd>
+-                </div>
+-              ) : null}
+-            </dl>
+-
+-            {listing.reasons?.length ? (
+-              <section className="sheet-section">
+-                <h3>
+-                  {copy("matchReasonsTitle", "匹配理由", "Why it matches")}
+-                </h3>
+-                <ul className="reason-list">
+-                  {listing.reasons.map((reason) => (
+-                    <li key={reason}>
+-                      <span>
+-                        <Check size={14} aria-hidden="true" />
+-                      </span>
+-                      {reason}
+-                    </li>
+-                  ))}
+-                </ul>
+-              </section>
+-            ) : null}
+-
+-            {listing.risks?.length ? (
+-              <section className="sheet-section risk-section">
+-                <h3>
+-                  {copy("matchRisksTitle", "需要留意", "Things to consider")}
+-                </h3>
+-                <ul className="reason-list">
+-                  {listing.risks.map((risk) => (
+-                    <li key={risk}>
+-                      <span>!</span>
+-                      {risk}
+-                    </li>
+-                  ))}
+-                </ul>
+-              </section>
+-            ) : null}
+-
+-            {listing.seller ? (
+-              <section className="sheet-section trust-section">
+-                <div className="seller-line">
+-                  <span className="seller-avatar">
+-                    {listing.seller.slice(0, 1)}
+-                  </span>
+-                  <div>
+-                    <strong>{listing.seller}</strong>
+-                    {listing.response ? (
+-                      <small>{listing.response}</small>
+-                    ) : null}
+-                  </div>
+-                </div>
+-              </section>
+-            ) : null}
+-
+-            {onManage ? null : (
+-              <section className="offline-contact-card">
+-                <span className="contact-icon">
+-                  <LockKeyhole aria-hidden="true" />
+-                </span>
+-                <div>
+-                  <h3>
+-                    {copy(
+-                      "contactTitle",
+-                      "申请联系需双方同意",
+-                      "Contact needs mutual consent",
+-                    )}
+-                  </h3>
+-                  <p>
+-                    {copy(
+-                      "contactDescription",
+-                      "提交后只写入撮合申请。只有双方明确同意后，才解锁已验证的联系方式。",
+-                      "This only records a match request. Verified contact details unlock only after both sides explicitly agree.",
+-                    )}
+-                  </p>
+-                </div>
+-              </section>
+-            )}
+-          </DrawerBody>
+-          <DrawerFooter
+-            className={`sheet-footer${onManage ? " is-owner" : ""}`}
+-          >
+-            {onManage ? null : (
+-              <div>
+-                {contactSubmitted ? (
+-                  <small className="sheet-contact-success" role="status">
+-                    {copy(
+-                      "contactSubmittedLabel",
+-                      "联系申请已发送，等待供给方同意",
+-                      "Contact request sent; waiting for the supply side",
+-                    )}
+-                  </small>
+-                ) : (
+-                  <small>
+-                    {copy(
+-                      "contactFooterHint",
+-                      "不会自动交换电话或微信",
+-                      "Phone and WeChat are never shared automatically",
+-                    )}
+-                  </small>
+-                )}
+-              </div>
+-            )}
+-            <Button
+-              className="button button-dark"
+-              type="button"
+-              onClick={() =>
+-                onManage ? void onManage(listing) : void submitContact()
+-              }
+-              disabled={
+-                !onManage &&
+-                (contactSubmitting || contactSubmitted || contactDisabled)
+-              }
+-              title={
+-                contactDisabled
+-                  ? copy(
+-                      "contactUnavailableTitle",
+-                      "当前环境未连接真实撮合 API",
+-                      "The live matching API is not connected",
+-                    )
+-                  : undefined
+-              }
+-            >
+-              {onManage
+-                ? copy("manageProductLabel", "管理商品", "Manage product")
+-                : contactSubmitting
+-                  ? copy("contactSubmittingLabel", "正在提交…", "Submitting…")
+-                  : contactSubmitted
+-                    ? copy("contactSubmittedButton", "已发送", "Sent")
+-                    : contactDisabled
+-                      ? copy(
+-                          "contactUnavailableLabel",
+-                          "当前暂不可用",
+-                          "Unavailable right now",
+-                        )
+-                      : copy(
+-                          "requestContactLabel",
+-                          "申请联系",
+-                          "Request contact",
+-                        )}
+-            </Button>
+-          </DrawerFooter>
+-        </DrawerContent>
+-      ) : null}
+-    </Drawer>
+-  );
+-}
++import { Check, ShieldCheck } from "lucide-react";
+ 
+ interface ModeDialogProps {
+   open: boolean;
+diff --git a/web/src/components/index.ts b/web/src/components/index.ts
+index 558de9e..6f4af2d 100644
+--- a/web/src/components/index.ts
++++ b/web/src/components/index.ts
+@@ -6,6 +6,7 @@ export * from "./shell/PlatformOverlaysHost";
+ // Core Primitives & UI Elements
+ export * from "./Primitives";
+ export * from "./Overlays";
++export * from "./ListingSheet";
+ export * from "./PreferenceControls";
+ export * from "./PalettePicker";
+ export * from "./NotificationBell";
+@@ -15,6 +16,7 @@ export * from "./PluginHost";
+ export * from "./WorkspaceSettingsDialog";
+ 
+ // Account & Auth
++export * from "./LoginMethodsPanel";
+ export * from "./LoginScreen";
+ export * from "./PersonalProfilePanel";
+ export * from "./PasskeyPanel";
+diff --git a/web/src/components/shell/PlatformOverlaysHost.tsx b/web/src/components/shell/PlatformOverlaysHost.tsx
+index 0e729ef..2d8953e 100644
+--- a/web/src/components/shell/PlatformOverlaysHost.tsx
++++ b/web/src/components/shell/PlatformOverlaysHost.tsx
+@@ -3,7 +3,8 @@
+ import { AnimatePresence, motion } from "motion/react";
+ import { LogOut, ShieldCheck, Store, UserRound, X } from "lucide-react";
+ 
+-import { ListingSheet, ModeDialog } from "../Overlays";
++import { ListingSheet } from "../ListingSheet";
++import { ModeDialog } from "../Overlays";
+ import { WorkspaceSettingsDialog } from "../WorkspaceSettingsDialog";
+ import { SubplatformAdminDashboard } from "../SubplatformAdminDashboard";
+ import { PreferenceControls } from "../PreferenceControls";
+diff --git a/web/src/retail-ui.css b/web/src/retail-ui.css
+index 3e1f4d0..403acc8 100644
+--- a/web/src/retail-ui.css
++++ b/web/src/retail-ui.css
+@@ -30,6 +30,8 @@
+   --retail-sage: #dfe7df;
+   --retail-sage-ink: #355744;
+   --retail-danger: #a43d3d;
++  /* Price ink: the one warm signal on the page, so listings read product-first. */
++  --retail-price: #b3471f;
+   --retail-focus: var(--retail-accent);
+   --background: var(--retail-surface);
+   --background-subtle: var(--retail-canvas);
+@@ -95,6 +97,7 @@
+   --retail-sage: #29382f;
+   --retail-sage-ink: #add0b8;
+   --retail-danger: #f29a96;
++  --retail-price: #f0a17c;
+   --retail-focus: var(--retail-accent);
+   --background: var(--retail-surface);
+   --background-subtle: var(--retail-canvas);
+@@ -804,35 +807,26 @@ select {
+   gap: clamp(1rem, 2vw, 1.6rem);
+ }
+ 
+-/* Image-first product cards */
++/* Product-first listing cards: photo, title, key specs, price, store. */
+ .marketplace-product-card {
+-  min-width: 0;
+-  padding: 0;
+-  border: 0;
+-  background: transparent;
+-}
+-
+-.marketplace-product-box {
+   position: relative;
+   min-width: 0;
++  padding: 0;
+   border: 0;
+   background: transparent;
+-  box-shadow: none;
+-  transition: transform 180ms ease;
+-}
+-
+-.marketplace-product-lid {
+-  display: none;
+ }
+ 
+ .marketplace-product-media {
+   position: relative;
+-  aspect-ratio: 1 / 1;
++  aspect-ratio: 4 / 3;
+   overflow: hidden;
+   margin: 0;
+   border: 1px solid var(--retail-line);
+   border-radius: 0.9rem;
+   background: var(--retail-surface-soft);
++  transition:
++    border-color 160ms ease,
++    box-shadow 160ms ease;
+ }
+ 
+ .marketplace-product-media > img {
+@@ -864,10 +858,6 @@ select {
+   font-weight: 700;
+ }
+ 
+-.marketplace-product-code {
+-  display: none;
+-}
+-
+ .marketplace-like-button {
+   position: absolute;
+   z-index: 2;
+@@ -904,36 +894,19 @@ select {
+   font-weight: 650;
+ }
+ 
+-.marketplace-product-end-label {
++.marketplace-product-info {
+   margin: 0;
+-  padding: 0.9rem 0.1rem 0;
++  padding: 0.8rem 0.1rem 0;
++  display: grid;
++  gap: 0.3rem;
+   border: 0;
+   background: transparent;
+   color: var(--retail-ink);
+ }
+ 
+-.marketplace-product-origin {
+-  display: flex;
+-  align-items: center;
+-  gap: 0.4rem;
+-  color: var(--retail-muted);
+-  font-size: 0.68rem;
+-  font-weight: 600;
+-  letter-spacing: 0;
+-  text-transform: none;
+-}
+-
+-.marketplace-product-origin > i {
+-  width: 0.45rem;
+-  height: 0.45rem;
+-  flex: 0 0 auto;
+-  border-radius: 50%;
+-  background: var(--retail-sage-ink);
+-}
+-
+ .marketplace-product-title {
+   width: 100%;
+-  margin-top: 0.45rem;
++  margin: 0;
+   padding: 0;
+   display: -webkit-box;
+   overflow: hidden;
+@@ -950,87 +923,108 @@ select {
+   cursor: pointer;
+ }
+ 
+-.marketplace-product-title:hover {
+-  color: var(--retail-blue);
++/* The title is the card's single control; stretch its hit area over the card. */
++.marketplace-product-title::after {
++  position: absolute;
++  inset: 0;
++  content: "";
+ }
+ 
+-.marketplace-product-subtitle {
+-  margin-top: 0.28rem;
++.marketplace-product-specs {
++  margin: 0;
+   overflow: hidden;
+   color: var(--retail-muted);
+-  font-size: 0.72rem;
++  font-size: 0.74rem;
+   text-overflow: ellipsis;
+   white-space: nowrap;
+ }
+ 
+ .marketplace-product-price-row {
+-  margin-top: 0.7rem;
+-  padding-top: 0;
++  margin-top: 0.1rem;
+   display: flex;
+-  align-items: center;
+-  justify-content: space-between;
+-  gap: 0.7rem;
+-  border: 0;
++  align-items: baseline;
++  gap: 0.4rem;
+ }
+ 
+ .marketplace-product-price-row > strong {
+   min-width: 0;
+   overflow-wrap: anywhere;
+-  color: var(--retail-ink);
+-  font-size: 0.95rem;
+-  font-weight: 720;
++  color: var(--retail-price);
++  font-size: 1.06rem;
++  font-weight: 740;
++  letter-spacing: -0.01em;
+ }
+ 
+-.marketplace-product-price-row > button {
+-  min-height: 2.75rem;
+-  padding: 0 0.15rem 0 0.7rem;
+-  display: inline-flex;
++.marketplace-product-price-row > span {
++  color: var(--retail-muted);
++  font-size: 0.68rem;
++}
++
++.marketplace-product-origin {
++  margin-top: 0.05rem;
++  display: flex;
+   align-items: center;
+-  gap: 0.25rem;
+-  border: 0;
+-  background: transparent;
+-  color: var(--retail-blue);
+-  font-size: 0.7rem;
+-  font-weight: 650;
+-  white-space: nowrap;
+-  cursor: pointer;
++  gap: 0.4rem;
++  color: var(--retail-muted);
++  font-size: 0.68rem;
++  font-weight: 600;
++  letter-spacing: 0;
++  text-transform: none;
+ }
+ 
+-.marketplace-product-price-row svg {
+-  width: 0.85rem;
+-  height: 0.85rem;
++.marketplace-product-origin > i {
++  width: 0.45rem;
++  height: 0.45rem;
++  flex: 0 0 auto;
++  border-radius: 50%;
++  background: var(--retail-sage-ink);
++}
++
++.marketplace-product-origin > span {
++  overflow: hidden;
++  text-overflow: ellipsis;
++  white-space: nowrap;
+ }
+ 
+ @media (hover: hover) and (pointer: fine) {
+-  .marketplace-product-box:hover {
+-    transform: translateY(-3px);
++  .marketplace-product-card:hover .marketplace-product-media {
++    border-color: var(--retail-line-strong);
++    box-shadow: var(--shadow-small);
++  }
++
++  .marketplace-product-card:hover .marketplace-product-media > img {
++    transform: scale(1.03);
+   }
+ 
+-  .marketplace-product-box:hover .marketplace-product-media > img {
+-    transform: scale(1.025);
++  .marketplace-product-card:hover .marketplace-product-title {
++    color: var(--retail-blue);
+   }
+ }
+ 
+-.marketplace-product-card.is-chat-recommendation .marketplace-product-box {
++.marketplace-product-card.is-chat-recommendation {
+   display: grid;
+   grid-template-columns: 7.5rem minmax(0, 1fr);
+   gap: 0.8rem;
+ }
+ 
+ .marketplace-product-card.is-chat-recommendation .marketplace-product-media {
+-  aspect-ratio: 1 / 1;
+   border-radius: 0.7rem;
+ }
+ 
+-.marketplace-product-card.is-chat-recommendation
+-  .marketplace-product-end-label {
+-  padding-top: 0.15rem;
++.marketplace-product-card.is-chat-recommendation .marketplace-product-info {
++  padding: 0.15rem 0 0;
+ }
+ 
+ .marketplace-product-card.is-chat-recommendation .marketplace-product-title {
+   font-size: 0.86rem;
+ }
+ 
++.marketplace-product-card.is-chat-recommendation
++  .marketplace-product-price-row
++  > strong {
++  font-size: 0.95rem;
++}
++
+ .root-marketplace-loading-state {
+   display: grid;
+   gap: 0.9rem;
+@@ -1049,10 +1043,8 @@ select {
+ }
+ 
+ .root-marketplace-loading-box {
+-  min-height: 20rem;
+   padding: 0;
+   display: grid;
+-  grid-template-rows: minmax(12rem, 1fr) auto auto;
+   gap: 0.6rem;
+   border: 0;
+   background: transparent;
+@@ -1065,7 +1057,8 @@ select {
+ }
+ 
+ .root-marketplace-loading-visual {
+-  min-height: 12rem;
++  aspect-ratio: 4 / 3;
++  border-radius: 0.9rem;
+ }
+ 
+ .root-marketplace-loading-line {
+@@ -2172,6 +2165,47 @@ select {
+   box-shadow: var(--shadow-large);
+ }
+ 
++/* Remap the sheet's legacy local tokens onto the retail theme so the offer
++   detail follows the active palette and stays readable in dark mode. */
++.listing-sheet {
++  --ink: var(--retail-ink);
++  --ink-soft: var(--retail-ink-soft);
++  --muted: var(--retail-muted);
++  --ivory: var(--retail-surface-raised);
++  --paper: var(--retail-surface);
++  --paper-deep: var(--retail-surface-soft);
++  --line: var(--retail-line);
++  --line-strong: var(--retail-line-strong);
++  --surface: var(--retail-surface);
++}
++
++.listing-sheet .sheet-price {
++  margin-top: 0.85rem;
++  align-items: baseline;
++  justify-content: flex-start;
++  gap: 0.5rem;
++}
++
++.listing-sheet .sheet-price strong {
++  color: var(--retail-price);
++  font-size: 1.6rem;
++  font-weight: 740;
++  letter-spacing: -0.02em;
++}
++
++.listing-sheet .sheet-facts dd {
++  color: var(--retail-ink);
++}
++
++.listing-sheet .offline-contact-card {
++  background: var(--retail-accent);
++  color: var(--retail-accent-contrast);
++}
++
++.listing-sheet .offline-contact-card p {
++  color: color-mix(in srgb, var(--retail-accent-contrast) 74%, transparent);
++}
++
+ .sheet-header,
+ .sheet-footer {
+   border-color: var(--retail-line);
+@@ -2345,28 +2379,12 @@ select {
+     font-size: 0.88rem;
+   }
+ 
+-  .marketplace-product-subtitle {
+-    display: none;
+-  }
+-
+-  .marketplace-product-price-row {
+-    margin-top: 0.5rem;
++  .marketplace-product-specs {
++    font-size: 0.7rem;
+   }
+ 
+   .marketplace-product-price-row > strong {
+-    font-size: 0.88rem;
+-  }
+-
+-  .marketplace-product-price-row > button {
+-    width: 2.75rem;
+-    padding: 0;
+-    justify-content: center;
+-    font-size: 0;
+-  }
+-
+-  .marketplace-product-price-row > button svg {
+-    width: 1rem;
+-    height: 1rem;
++    font-size: 0.98rem;
+   }
+ 
+   .marketplace-like-button {
+@@ -2416,7 +2434,7 @@ select {
+ }
+ 
+ @media (prefers-reduced-motion: reduce) {
+-  .marketplace-product-box,
++  .marketplace-product-media,
+   .marketplace-product-media > img,
+   .root-marketplace-stage,
+   .floating-clerk-rnd,
+@@ -2424,8 +2442,7 @@ select {
+     transition: none;
+   }
+ 
+-  .marketplace-product-box:hover,
+-  .marketplace-product-box:hover .marketplace-product-media > img,
++  .marketplace-product-card:hover .marketplace-product-media > img,
+   .root-marketplace-clerk-toggle:hover {
+     transform: none;
+   }
+-- 
+2.43.0
+
